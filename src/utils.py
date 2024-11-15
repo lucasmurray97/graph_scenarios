@@ -1,6 +1,7 @@
 import torch
 from torch_geometric.data import Dataset
 from torch_geometric.utils.convert import from_networkx
+from torch_geometric.utils import to_dense_adj
 import glob
 import networkx as nx
 import pickle
@@ -24,13 +25,33 @@ class GraphDataset(Dataset):
             n += 1
         self.ids = ids
 
-    def len(self):
+    def __len__(self):
         # return the number of files in the directory
         return len(self.ids)
 
-    def get(self, idx):
+    def __getitem__(self, idx):
         # load the pickle file and return a PyG Graph object corresponding to the idx file
         G = pickle.load(open(f'{self.ids[idx]}', 'rb'))
-        pyg_graph = from_networkx(G)
-        pyg_graph.original_ids = torch.tensor(list(G.nodes()), dtype=torch.long)
+        ordered_nodes = sorted(G.nodes())
+        mapping = {int(node): i for i, node in enumerate(ordered_nodes)}
+        ordered_G = nx.relabel_nodes(G, mapping)
+        pyg_graph = from_networkx(ordered_G)
+        pyg_graph.original_ids = torch.tensor(list(mapping.keys()), dtype=torch.int)
+        # List nodes in pyg_graph:
+        pyg_graph.x = torch.tensor([1 for i in range(len(ordered_G))], dtype=torch.float).unsqueeze(1)
         return pyg_graph
+    
+    
+def reconstruct_matrix(graph_list):
+    global_matrix = []
+    for graph in graph_list:
+        node_mapping = graph.original_ids
+        mapped_edge_index = torch.tensor(
+        [[node_mapping[int(i)] for i in edge_pair] for edge_pair in graph.edge_index.T],
+            dtype=torch.long).T
+        matrix = to_dense_adj(mapped_edge_index, max_num_nodes=400)[0]
+        global_matrix.append(matrix)
+    # We concatenate the list of matrices into a tensor:
+    return torch.cat(global_matrix)
+    
+    
