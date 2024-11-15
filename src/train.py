@@ -22,6 +22,7 @@ parser.add_argument('--epochs', type=int, required=True, default = 100)
 parser.add_argument('--lr', type=float, default=0.0001)
 parser.add_argument('--distribution_std', type=float, default=0.1)
 parser.add_argument('--variational_beta', type=float, default=1.)
+parser.add_argument('--batch_size', type=int, default=16)
 
 # Recover command line arguments
 args = parser.parse_args()
@@ -30,6 +31,7 @@ epochs = args.epochs
 lr = args.lr
 variational_beta = args.variational_beta
 distribution_std = args.distribution_std
+batch_size = args.batch_size
 
 # Define the parameters
 params = {
@@ -42,17 +44,17 @@ dataset = GraphDataset(root='../data/sub20/graphs')
 
 # Split the dataset into training, validation, and test sets
 print("Splitting the dataset")
-train_size = int(0.01 * len(dataset))
-val_size = int(0.01 * len(dataset))
+train_size = int(0.8 * len(dataset))
+val_size = int(0.1 * len(dataset))
 test_size = len(dataset) - train_size - val_size
 print(f"Train size: {train_size}, Val size: {val_size}")
 
 train_dataset, val_dataset, test_dataset = random_split(dataset, [train_size, val_size, test_size])
 
 # Create the DataLoader
-train_loader = DataLoader(train_dataset, batch_size=16, shuffle=True)
-val_loader = DataLoader(val_dataset, batch_size=16, shuffle=False)
-test_loader = DataLoader(test_dataset, batch_size=16, shuffle=False)
+train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
+test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
 
 # Define the model and the optimizer
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -76,7 +78,7 @@ for _ in tqdm(range(epochs)):
     train_epoch_loss = 0
     train_epoch_recon_loss = 0
     train_epoch_kl_loss = 0
-    for i, batch in enumerate(train_loader):
+    for i, batch in tqdm(enumerate(train_loader)):
         optimizer.zero_grad()
         batch = batch.to(device)
         output, mu, log = model(batch.x, batch.edge_index, batch.batch)
