@@ -37,6 +37,7 @@ class GraphDataset(Dataset):
         ordered_G = nx.relabel_nodes(G, mapping)
         pyg_graph = from_networkx(ordered_G)
         pyg_graph.original_ids = torch.tensor(list(mapping.keys()), dtype=torch.int)
+        pyg_graph.original_graph = torch.tensor(float(self.ids[idx].split("_")[1].split(".pickle")[0]))
         # List nodes in pyg_graph:
         pyg_graph.x = torch.tensor([1 for i in range(len(ordered_G))], dtype=torch.float).unsqueeze(1)
         return pyg_graph
