@@ -1,5 +1,4 @@
-# Generate a readme file for this whole project
-## Project Overview
+# Project Overview
 
 This project involves generating various graph scenarios. The goal is to create, analyze, and visualize different types of graphs to understand their properties and behaviors.
 
