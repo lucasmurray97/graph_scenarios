@@ -51,3 +51,8 @@ np.save("embeddings/embeddings.npy", embeddings)
 # Save correspondance dict
 np.save("embeddings/correspondance.npy", correspondance)
 
+"""
+# Load embeddings and correspondance
+embeddings = np.load("embeddings/embeddings.npy", allow_pickle=True)
+correspondance = np.load("embeddings/correspondance.npy", allow_pickle=True).item()
+"""
