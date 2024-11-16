@@ -9,6 +9,7 @@ from torch_geometric.nn import GCNConv
 from torch_geometric.utils import train_test_split_edges, to_dense_adj
 from utils import GraphDataset, reconstruct_matrix
 from networks.graph_vae import GRAPH_VAE
+from networks.graph_vae_v2 import GRAPH_VAE_V2
 from torch_geometric.loader import DataLoader
 import torch.optim as optim
 from torch.utils.data import random_split
@@ -23,6 +24,7 @@ parser.add_argument('--lr', type=float, default=0.0001)
 parser.add_argument('--distribution_std', type=float, default=0.1)
 parser.add_argument('--variational_beta', type=float, default=1.)
 parser.add_argument('--batch_size', type=int, default=16)
+parser.add_argument('--model', type=str, default='v1')
 
 # Recover command line arguments
 args = parser.parse_args()
@@ -32,6 +34,7 @@ lr = args.lr
 variational_beta = args.variational_beta
 distribution_std = args.distribution_std
 batch_size = args.batch_size
+model_name = args.model
 
 # Define the parameters
 params = {
@@ -39,13 +42,18 @@ params = {
     'variational_beta': variational_beta,
 }
 
+models = {
+    "v1": GRAPH_VAE,
+    "v2": GRAPH_VAE_V2
+}
+
 # Load the dataset
 dataset = GraphDataset(root='../data/sub20/graphs')
 
 # Split the dataset into training, validation, and test sets
 print("Splitting the dataset")
-train_size = int(0.8 * len(dataset))
-val_size = int(0.1 * len(dataset))
+train_size = int(0.01 * len(dataset))
+val_size = int(0.01 * len(dataset))
 test_size = len(dataset) - train_size - val_size
 print(f"Train size: {train_size}, Val size: {val_size}")
 
@@ -59,7 +67,7 @@ test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
 # Define the model and the optimizer
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 input_dim = dataset.num_features
-model = GRAPH_VAE(input_dim, latent_dim, params).to(device)
+model = models[model_name](input_dim, latent_dim, params).to(device)
 optimizer = optim.Adam(model.parameters(), lr=lr)
 
 # Print number of params:
@@ -115,23 +123,23 @@ for _ in tqdm(range(epochs)):
 plt.plot(train_loss[1:], label='train_loss')
 plt.plot(val_loss[1:], label='val_loss')
 plt.legend()
-plt.savefig(f'experiments/loss_latent={latent_dim}_lr={lr}_epochs={epochs}.png')
+plt.savefig(f'experiments/{model.name}_loss_latent={latent_dim}_lr={lr}_epochs={epochs}_variational_beta={variational_beta}.png')
 plt.clf()
 
 plt.plot(train_recon_loss[1:], label='train_recon_loss')
 plt.plot(val_recon_loss[1:], label='val_recon_loss')
 plt.legend()
-plt.savefig(f'experiments/recon_loss_latent={latent_dim}_lr={lr}_epochs={epochs}.png')
+plt.savefig(f'experiments/{model.name}_recon_loss_latent={latent_dim}_lr={lr}_epochs={epochs}_variational_beta={variational_beta}.png')
 plt.clf()
 
 plt.plot(train_kl_loss[1:], label='train_kl_loss')
 plt.plot(val_kl_loss[1:], label='val_kl_loss')
 plt.legend()
-plt.savefig(f'experiments/kl_loss_latent={latent_dim}_lr={lr}_epochs={epochs}.png')
+plt.savefig(f'experiments/{model.name}_kl_loss_latent={latent_dim}_lr={lr}_epochs={epochs}_variational_beta={variational_beta}.png')
 plt.clf()
 
 # Save the model
-torch.save(model.state_dict(), f'networks/weights/model_latent={latent_dim}_lr={lr}_epochs={epochs}.pt')
+torch.save(model.state_dict(), f'networks/weights/{model.name}_latent={latent_dim}_lr={lr}_epochs={epochs}_variational_beta={variational_beta}.pt')
 
 
 

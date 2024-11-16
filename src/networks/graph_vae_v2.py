@@ -4,13 +4,13 @@ from torch_geometric.nn import GCNConv
 from torch_geometric.nn.pool import global_mean_pool
 import torch.nn.functional as F
 
-class GRAPH_VAE(torch.nn.Module):
+class GRAPH_VAE_V2(torch.nn.Module):
     def __init__(self, input_dim, latent_dim, params):
-        super(GRAPH_VAE, self).__init__()
+        super(GRAPH_VAE_V2, self).__init__()
         self.training = True
         self.distribution_std = params['distribution_std']
         self.variational_beta = params['variational_beta']
-        self.name = "GRAPH_VAE"
+        self.name = "GRAPH_VAE_V2"
 
         # Encoder:
         self.conv1_mu = GCNConv(input_dim, 16)
@@ -22,7 +22,10 @@ class GRAPH_VAE(torch.nn.Module):
         self.pool = global_mean_pool
 
         # Decoder:
-        self.fc1 = torch.nn.Linear(latent_dim, 160000)
+        self.fc1 = torch.nn.Linear(latent_dim, 128)
+        self.fc2 = torch.nn.Linear(128, 256)
+        self.fc3 = torch.nn.Linear(256, 512)
+        self.fc4 = torch.nn.Linear(512, 400)
         
 
 
@@ -47,8 +50,14 @@ class GRAPH_VAE(torch.nn.Module):
         return mu, log
     
     def decode(self, z):
-        z = self.fc1(z).sigmoid()
-        return z
+        z = self.fc1(z).relu()
+        z = self.fc2(z).relu()
+        z = self.fc3(z).relu()
+        basis = self.fc4(z).relu()
+        basis_1 = basis.unsqueeze(2)
+        basis_2 = basis.unsqueeze(1)
+        matrix = (basis_1 @ basis_2).sigmoid()
+        return matrix
     
     def latent_sample(self, mu, logvar):
         if self.training:
