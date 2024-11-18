@@ -55,8 +55,8 @@ dataset = GraphDataset(root='../data/sub20/graphs')
 
 # Split the dataset into training, validation, and test sets
 print("Splitting the dataset")
-train_size = int(0.5 * len(dataset))
-val_size = int(0.1 * len(dataset))
+train_size = int(0.05 * len(dataset))
+val_size = int(0.01 * len(dataset))
 test_size = len(dataset) - train_size - val_size
 print(f"Train size: {train_size}, Val size: {val_size}")
 
@@ -74,7 +74,7 @@ model = models[model_name](input_dim, latent_dim, params).to(device)
 optimizer = optim.Adam(model.parameters(), lr=lr)
 
 # Print number of params:
-print(f"Number of parameters: {sum(p.numel() for p in model.parameters())}")
+print(f"Number of parameters: {sum(p.numel() for p in model.parameters() if p.requires_grad)}")
 
 # Train the model
 train_loss = []
@@ -84,8 +84,8 @@ train_kl_loss = []
 val_loss = []
 val_recon_loss = []
 val_kl_loss = []
+model.train_()
 for _ in tqdm(range(epochs)):
-    model.train_()
     train_epoch_loss = 0
     train_epoch_recon_loss = 0
     train_epoch_kl_loss = 0
@@ -101,7 +101,7 @@ for _ in tqdm(range(epochs)):
         optimizer.step()
         train_epoch_loss += loss.item()
         train_epoch_recon_loss += recon_loss.item()
-        train_epoch_kl_loss += kl_loss.item()
+        train_epoch_kl_loss += kl_loss.item() 
         n += 1
     train_loss.append(train_epoch_loss / n)
     train_recon_loss.append(train_epoch_recon_loss / n)
@@ -111,7 +111,6 @@ for _ in tqdm(range(epochs)):
     val_epoch_recon_loss = 0
     val_epoch_kl_loss = 0
     m = 0
-    model.eval_()
     for i, batch in enumerate(val_loader):
         batch = batch.to(device)
         output, mu, log = model(batch.x, batch.edge_index, batch.batch)
@@ -127,29 +126,47 @@ for _ in tqdm(range(epochs)):
     val_kl_loss.append(val_epoch_kl_loss / m)
 
 # Plot the training and validation losses
-plt.plot(train_loss[1:], label='train_loss')
-plt.plot(val_loss[1:], label='val_loss')
+plt.plot(train_loss, label='train_loss')
+#plt.plot(val_loss, label='val_loss')
 plt.legend()
-plt.savefig(f'experiments/{model.name}_loss_latent={latent_dim}_lr={lr}_epochs={epochs}_variational_beta={variational_beta}.png')
+plt.savefig(f'experiments/{model.name}_train_loss_latent={latent_dim}_lr={lr}_epochs={epochs}_variational_beta={variational_beta}.png')
 plt.clf()
 
-plt.plot(train_recon_loss[1:], label='train_recon_loss')
-plt.plot(val_recon_loss[1:], label='val_recon_loss')
+#plt.plot(train_loss, label='train_loss')
+plt.plot(val_loss, label='val_loss')
 plt.legend()
-plt.savefig(f'experiments/{model.name}_recon_loss_latent={latent_dim}_lr={lr}_epochs={epochs}_variational_beta={variational_beta}.png')
+plt.savefig(f'experiments/{model.name}_val_loss_latent={latent_dim}_lr={lr}_epochs={epochs}_variational_beta={variational_beta}.png')
 plt.clf()
 
-plt.plot(train_kl_loss[1:], label='train_kl_loss')
-plt.plot(val_kl_loss[1:], label='val_kl_loss')
+plt.plot(train_recon_loss, label='train_recon_loss')
+#plt.plot(val_recon_loss, label='val_recon_loss')
 plt.legend()
-plt.savefig(f'experiments/{model.name}_kl_loss_latent={latent_dim}_lr={lr}_epochs={epochs}_variational_beta={variational_beta}.png')
+plt.savefig(f'experiments/{model.name}_train_recon_loss_latent={latent_dim}_lr={lr}_epochs={epochs}_variational_beta={variational_beta}.png')
+plt.clf()
+
+#plt.plot(train_recon_loss, label='train_recon_loss')
+plt.plot(val_recon_loss, label='val_recon_loss')
+plt.legend()
+plt.savefig(f'experiments/{model.name}_val_recon_loss_latent={latent_dim}_lr={lr}_epochs={epochs}_variational_beta={variational_beta}.png')
+plt.clf()
+
+plt.plot(train_kl_loss, label='train_kl_loss')
+#plt.plot(val_kl_loss, label='val_kl_loss')
+plt.legend()
+plt.savefig(f'experiments/{model.name}_train_kl_loss_latent={latent_dim}_lr={lr}_epochs={epochs}_variational_beta={variational_beta}.png')
+plt.clf()
+
+#plt.plot(train_kl_loss, label='train_kl_loss')
+plt.plot(val_kl_loss, label='val_kl_loss')
+plt.legend()
+plt.savefig(f'experiments/{model.name}_val_kl_loss_latent={latent_dim}_lr={lr}_epochs={epochs}_variational_beta={variational_beta}.png')
 plt.clf()
 
 # Save the model
 torch.save(model.state_dict(), f'networks/weights/{model.name}_latent={latent_dim}_lr={lr}_epochs={epochs}_variational_beta={variational_beta}.pt')
 
 # Evaluate the model
-
+model.train_()
 accuracy = []
 roc = []
 model.eval_()
