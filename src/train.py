@@ -55,8 +55,8 @@ dataset = GraphDataset(root='../data/sub20/graphs')
 
 # Split the dataset into training, validation, and test sets
 print("Splitting the dataset")
-train_size = int(0.05 * len(dataset))
-val_size = int(0.01 * len(dataset))
+train_size = int(0.8 * len(dataset))
+val_size = int(0.1 * len(dataset))
 test_size = len(dataset) - train_size - val_size
 print(f"Train size: {train_size}, Val size: {val_size}")
 
@@ -68,7 +68,7 @@ val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
 test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
 
 # Define the model and the optimizer
-device = torch.device('cpu')
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 input_dim = dataset.num_features
 model = models[model_name](input_dim, latent_dim, params).to(device)
 optimizer = optim.Adam(model.parameters(), lr=lr)
