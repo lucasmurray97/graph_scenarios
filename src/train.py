@@ -10,11 +10,13 @@ from torch_geometric.utils import train_test_split_edges, to_dense_adj
 from utils import GraphDataset, reconstruct_matrix
 from networks.graph_vae import GRAPH_VAE
 from networks.graph_vae_v2 import GRAPH_VAE_V2
+from networks.gae import GRAPH_VAE_V3
 from torch_geometric.loader import DataLoader
 import torch.optim as optim
 from torch.utils.data import random_split
 import argparse
 import matplotlib.pyplot as plt
+from torch_geometric.utils import negative_sampling
 
 from tqdm import tqdm
 parser = argparse.ArgumentParser()
@@ -44,7 +46,8 @@ params = {
 
 models = {
     "v1": GRAPH_VAE,
-    "v2": GRAPH_VAE_V2
+    "v2": GRAPH_VAE_V2,
+    "v3": GRAPH_VAE_V3,
 }
 
 # Load the dataset
@@ -52,8 +55,8 @@ dataset = GraphDataset(root='../data/sub20/graphs')
 
 # Split the dataset into training, validation, and test sets
 print("Splitting the dataset")
-train_size = int(0.01 * len(dataset))
-val_size = int(0.01 * len(dataset))
+train_size = int(0.1 * len(dataset))
+val_size = int(0.1 * len(dataset))
 test_size = len(dataset) - train_size - val_size
 print(f"Train size: {train_size}, Val size: {val_size}")
 
@@ -82,7 +85,6 @@ val_loss = []
 val_recon_loss = []
 val_kl_loss = []
 for _ in tqdm(range(epochs)):
-    model.training = True
     train_epoch_loss = 0
     train_epoch_recon_loss = 0
     train_epoch_kl_loss = 0
@@ -91,8 +93,8 @@ for _ in tqdm(range(epochs)):
         batch = batch.to(device)
         output, mu, log = model(batch.x, batch.edge_index, batch.batch)
         graph_list = batch.to_data_list()
-        true_adjacency = reconstruct_matrix(graph_list).to(device)
-        recon_loss, kl_loss, loss = model.loss(output, true_adjacency, mu, log)
+        #true_adjacency = reconstruct_matrix(graph_list).to(device)
+        recon_loss, kl_loss, loss = model.loss(batch.x, batch.edge_index, batch.batch)
         loss.backward()
         optimizer.step()
         train_epoch_loss += loss.item()
@@ -102,7 +104,6 @@ for _ in tqdm(range(epochs)):
     train_recon_loss.append(train_epoch_recon_loss)
     train_kl_loss.append(train_epoch_kl_loss)
 
-    model.training = False
     val_epoch_loss = 0
     val_epoch_recon_loss = 0
     val_epoch_kl_loss = 0
@@ -110,8 +111,8 @@ for _ in tqdm(range(epochs)):
         batch = batch.to(device)
         output, mu, log = model(batch.x, batch.edge_index, batch.batch)
         graph_list = batch.to_data_list()
-        true_adjacency = reconstruct_matrix(graph_list).to(device)
-        recon_loss, kl_loss, loss = model.loss(output, true_adjacency, mu, log)
+        #true_adjacency = reconstruct_matrix(graph_list).to(device)
+        recon_loss, kl_loss, loss = model.loss(batch.x, batch.edge_index, batch.batch)
         val_epoch_loss += loss.item()
         val_epoch_recon_loss += recon_loss.item()
         val_epoch_kl_loss += kl_loss.item()
@@ -140,6 +141,30 @@ plt.clf()
 
 # Save the model
 torch.save(model.state_dict(), f'networks/weights/{model.name}_latent={latent_dim}_lr={lr}_epochs={epochs}_variational_beta={variational_beta}.pt')
+
+# Evaluate the model
+
+accuracy = []
+roc = []
+for i, batch in enumerate(val_loader):
+    batch = batch.to(device)
+    output, mu, log = model(batch.x, batch.edge_index, batch.batch)
+    neg_edge_index = negative_sampling(batch.edge_index, mu.size(0))
+    roc_, acc = model.gae.test(mu.cpu(), batch.edge_index.cpu(), neg_edge_index.cpu())
+    accuracy.append(acc)
+    roc.append(roc_)
+print(f"Accuracy: {sum(accuracy)/len(accuracy)}")
+print(f"ROC: {sum(roc)/len(roc)}")
+# write down results into a json
+import json
+results = {
+    "accuracy": sum(accuracy)/len(accuracy),
+    "roc": sum(roc)/len(roc),
+}
+# Save the results
+with open(f'experiments/{model.name}_results_latent={latent_dim}_lr={lr}_epochs={epochs}_variational_beta={variational_beta}.json', 'w') as f:
+    json.dump(results, f)
+    
 
 
 
