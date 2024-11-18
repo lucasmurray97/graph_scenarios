@@ -68,7 +68,7 @@ val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
 test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
 
 # Define the model and the optimizer
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+device = torch.device('cpu')
 input_dim = dataset.num_features
 model = models[model_name](input_dim, latent_dim, params).to(device)
 optimizer = optim.Adam(model.parameters(), lr=lr)
