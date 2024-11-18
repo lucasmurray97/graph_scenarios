@@ -85,6 +85,7 @@ val_loss = []
 val_recon_loss = []
 val_kl_loss = []
 for _ in tqdm(range(epochs)):
+    model.train()
     train_epoch_loss = 0
     train_epoch_recon_loss = 0
     train_epoch_kl_loss = 0
@@ -107,6 +108,7 @@ for _ in tqdm(range(epochs)):
     val_epoch_loss = 0
     val_epoch_recon_loss = 0
     val_epoch_kl_loss = 0
+    model.eval()
     for i, batch in enumerate(val_loader):
         batch = batch.to(device)
         output, mu, log = model(batch.x, batch.edge_index, batch.batch)
