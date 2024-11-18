@@ -59,6 +59,12 @@ class GRAPH_VAE_V3(torch.nn.Module):
     def pool(self, mu, batch):
         return self.pool(mu, batch)
     
+    def train_(self):
+        self.gae.training = True
+    
+    def eval_(self):
+        self.gae.training = False
+    
     
     
 

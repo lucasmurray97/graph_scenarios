@@ -55,7 +55,7 @@ dataset = GraphDataset(root='../data/sub20/graphs')
 
 # Split the dataset into training, validation, and test sets
 print("Splitting the dataset")
-train_size = int(0.8 * len(dataset))
+train_size = int(0.5 * len(dataset))
 val_size = int(0.1 * len(dataset))
 test_size = len(dataset) - train_size - val_size
 print(f"Train size: {train_size}, Val size: {val_size}")
@@ -85,10 +85,11 @@ val_loss = []
 val_recon_loss = []
 val_kl_loss = []
 for _ in tqdm(range(epochs)):
-    model.train()
+    model.train_()
     train_epoch_loss = 0
     train_epoch_recon_loss = 0
     train_epoch_kl_loss = 0
+    n = 0
     for i, batch in tqdm(enumerate(train_loader)):
         optimizer.zero_grad()
         batch = batch.to(device)
@@ -101,14 +102,16 @@ for _ in tqdm(range(epochs)):
         train_epoch_loss += loss.item()
         train_epoch_recon_loss += recon_loss.item()
         train_epoch_kl_loss += kl_loss.item()
-    train_loss.append(train_epoch_loss)
-    train_recon_loss.append(train_epoch_recon_loss)
-    train_kl_loss.append(train_epoch_kl_loss)
+        n += 1
+    train_loss.append(train_epoch_loss / n)
+    train_recon_loss.append(train_epoch_recon_loss / n)
+    train_kl_loss.append(train_epoch_kl_loss / n)
 
     val_epoch_loss = 0
     val_epoch_recon_loss = 0
     val_epoch_kl_loss = 0
-    model.eval()
+    m = 0
+    model.eval_()
     for i, batch in enumerate(val_loader):
         batch = batch.to(device)
         output, mu, log = model(batch.x, batch.edge_index, batch.batch)
@@ -118,9 +121,10 @@ for _ in tqdm(range(epochs)):
         val_epoch_loss += loss.item()
         val_epoch_recon_loss += recon_loss.item()
         val_epoch_kl_loss += kl_loss.item()
-    val_loss.append(val_epoch_loss)
-    val_recon_loss.append(val_epoch_recon_loss)
-    val_kl_loss.append(val_epoch_kl_loss)
+        m += 1
+    val_loss.append(val_epoch_loss / m)
+    val_recon_loss.append(val_epoch_recon_loss / m)
+    val_kl_loss.append(val_epoch_kl_loss / m)
 
 # Plot the training and validation losses
 plt.plot(train_loss[1:], label='train_loss')
@@ -148,7 +152,7 @@ torch.save(model.state_dict(), f'networks/weights/{model.name}_latent={latent_di
 
 accuracy = []
 roc = []
-model.gae.training = False
+model.eval_()
 for i, batch in enumerate(val_loader):
     batch = batch.to(device)
     output, mu, log = model(batch.x, batch.edge_index, batch.batch)
