@@ -55,7 +55,7 @@ dataset = GraphDataset(root='../data/sub20/graphs')
 
 # Split the dataset into training, validation, and test sets
 print("Splitting the dataset")
-train_size = int(0.1 * len(dataset))
+train_size = int(0.8 * len(dataset))
 val_size = int(0.1 * len(dataset))
 test_size = len(dataset) - train_size - val_size
 print(f"Train size: {train_size}, Val size: {val_size}")
@@ -146,6 +146,7 @@ torch.save(model.state_dict(), f'networks/weights/{model.name}_latent={latent_di
 
 accuracy = []
 roc = []
+model.gae.training = False
 for i, batch in enumerate(val_loader):
     batch = batch.to(device)
     output, mu, log = model(batch.x, batch.edge_index, batch.batch)
