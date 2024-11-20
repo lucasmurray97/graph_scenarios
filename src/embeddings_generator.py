@@ -13,6 +13,7 @@ sys.path.append('../../')
 from utils import GraphDataset, reconstruct_matrix
 from networks.graph_vae import GRAPH_VAE
 from networks.graph_vae_v2 import GRAPH_VAE_V2
+from networks.gae import GRAPH_VAE_V3
 from torch_geometric.loader import DataLoader
 import torch.optim as optim
 from torch.utils.data import random_split
@@ -25,16 +26,18 @@ dataset = GraphDataset(root='../data/sub20/graphs')
 
 # Define the parameters
 params = {
-    'distribution_std': 0.1,
-    'variational_beta': 100000,
+    'distribution_std': 1.,
+    'variational_beta': 0.01,
+    "capacity": 128
 }
 
 input_dim = dataset.num_features
-latent_dim = 128
-model = GRAPH_VAE(input_dim, latent_dim, params).to("cuda")
+latent_dim = 32
+model = GRAPH_VAE_V3(input_dim, latent_dim, params).to("cuda")
 # Load weights
-model.load_state_dict(torch.load(f"./networks/weights/model_latent=128_lr=0.0001_epochs=20.pt"))
-
+model.load_state_dict(torch.load(f"./networks/weights/GRAPH_VAE_V3_latent=32_lr=1e-06_epochs=50_variational_beta=0.01.pt"))
+model.eval()
+model.eval_()
 # Create the DataLoader
 loader = DataLoader(dataset, batch_size=1, shuffle=False)
 
@@ -43,6 +46,7 @@ correspondance = {}
 for i, batch in enumerate(loader):
     batch = batch.to("cuda")
     output, mu, log = model(batch.x, batch.edge_index, batch.batch)
+    mu, log = model.pool(mu, log, batch.batch)
     embeddings.append((mu.detach().cpu().numpy(), log.detach().cpu().numpy()))
     correspondance[i] = batch.original_graph.item()
 
