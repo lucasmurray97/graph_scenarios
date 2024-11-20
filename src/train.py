@@ -27,7 +27,7 @@ parser.add_argument('--distribution_std', type=float, default=0.1)
 parser.add_argument('--variational_beta', type=float, default=1.)
 parser.add_argument('--batch_size', type=int, default=16)
 parser.add_argument('--model', type=str, default='v1')
-
+parser.add_argument('--capacity', type=int, default=8)
 # Recover command line arguments
 args = parser.parse_args()
 latent_dim = args.latent_dim
@@ -37,11 +37,13 @@ variational_beta = args.variational_beta
 distribution_std = args.distribution_std
 batch_size = args.batch_size
 model_name = args.model
+capacity = args.capacity
 
 # Define the parameters
 params = {
     'distribution_std': distribution_std,
     'variational_beta': variational_beta,
+    'capacity': capacity,
 }
 
 models = {
