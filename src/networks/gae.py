@@ -3,27 +3,33 @@ import torch_geometric.transforms as T
 from torch_geometric.nn import GCNConv, GINConv, InnerProductDecoder, VGAE, Sequential
 from torch_geometric.nn.pool import global_mean_pool
 import torch.nn.functional as F
+from torch.nn import BatchNorm1d
 
 class ENCODER(torch.nn.Module):
     def __init__(self, input_dim, latent_dim, params):
         super(ENCODER, self).__init__()
+        self.capacity = params["capacity"]
 
         # Encoder:
         self.encoder_mu = Sequential('x, edge_index',[
-                (GCNConv(input_dim, 64), 'x, edge_index -> x' ),
+                (GCNConv(input_dim, input_dim * self.capacity), 'x, edge_index -> x' ),
+                BatchNorm1d(input_dim * self.capacity),
                 torch.nn.ReLU(),
-                (GCNConv(64, 128), 'x, edge_index -> x' ),
+                (GCNConv(input_dim * self.capacity, input_dim * self.capacity * 2), 'x, edge_index -> x' ),
+                BatchNorm1d(input_dim * self.capacity * 2),
                 torch.nn.ReLU(),
-                (GCNConv(128, latent_dim), 'x, edge_index -> x' ),
-                torch.nn.ReLU()])
+                (GCNConv(input_dim * self.capacity * 2, latent_dim), 'x, edge_index -> x' ),
+                ])
         
         self.encoder_log = Sequential('x, edge_index',[
-                (GCNConv(input_dim, 64), 'x, edge_index -> x' ),
+                (GCNConv(input_dim, input_dim * self.capacity), 'x, edge_index -> x' ),
                 torch.nn.ReLU(),
-                (GCNConv(64, 128), 'x, edge_index -> x' ),
+                BatchNorm1d(input_dim * self.capacity),
+                (GCNConv(input_dim * self.capacity, input_dim * self.capacity * 2), 'x, edge_index -> x' ),
                 torch.nn.ReLU(),
-                (GCNConv(128, latent_dim), 'x, edge_index -> x' ),
-                torch.nn.ReLU()])
+                BatchNorm1d(input_dim * self.capacity * 2),
+                (GCNConv(input_dim * self.capacity * 2, latent_dim), 'x, edge_index -> x' ),
+                ])
 
     def forward(self, x, edge_index):
         mu = self.encoder_mu(x, edge_index)
@@ -37,11 +43,11 @@ class GRAPH_VAE_V3(torch.nn.Module):
         self.training = True
         self.distribution_std = params['distribution_std']
         self.variational_beta = params['variational_beta']
+        self.capacity = params['capacity']
         self.name = "GRAPH_VAE_V3"
 
         self.gae = VGAE(ENCODER(input_dim, latent_dim, params))
-
-        self.pool = global_mean_pool
+        self.pool_layer = global_mean_pool
 
 
     
@@ -54,10 +60,11 @@ class GRAPH_VAE_V3(torch.nn.Module):
         recon_loss = self.gae.recon_loss(mu, edge_index)
         kl_loss = self.gae.kl_loss(mu)
         total_loss = recon_loss + self.variational_beta * kl_loss
+        #print(total_loss.item(), recon_loss.item(), kl_loss.item())
         return  recon_loss, kl_loss, total_loss
     
-    def pool(self, mu, batch):
-        return self.pool(mu, batch)
+    def pool(self, mu, log, batch):
+        return self.pool_layer(mu, batch), self.pool_layer(log, batch)
     
     def train_(self):
         self.gae.training = True

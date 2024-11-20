@@ -27,7 +27,7 @@ parser.add_argument('--distribution_std', type=float, default=0.1)
 parser.add_argument('--variational_beta', type=float, default=1.)
 parser.add_argument('--batch_size', type=int, default=16)
 parser.add_argument('--model', type=str, default='v1')
-
+parser.add_argument('--capacity', type=int, default=8)
 # Recover command line arguments
 args = parser.parse_args()
 latent_dim = args.latent_dim
@@ -37,11 +37,13 @@ variational_beta = args.variational_beta
 distribution_std = args.distribution_std
 batch_size = args.batch_size
 model_name = args.model
+capacity = args.capacity
 
 # Define the parameters
 params = {
     'distribution_std': distribution_std,
     'variational_beta': variational_beta,
+    'capacity': capacity,
 }
 
 models = {
@@ -129,41 +131,41 @@ for _ in tqdm(range(epochs)):
 plt.plot(train_loss, label='train_loss')
 #plt.plot(val_loss, label='val_loss')
 plt.legend()
-plt.savefig(f'experiments/{model.name}_train_loss_latent={latent_dim}_lr={lr}_epochs={epochs}_variational_beta={variational_beta}.png')
+plt.savefig(f'experiments/{model.name}_train_loss_latent={latent_dim}_lr={lr}_epochs={epochs}_variational_beta={variational_beta}_capacity={capacity}.png')
 plt.clf()
 
 #plt.plot(train_loss, label='train_loss')
 plt.plot(val_loss, label='val_loss')
 plt.legend()
-plt.savefig(f'experiments/{model.name}_val_loss_latent={latent_dim}_lr={lr}_epochs={epochs}_variational_beta={variational_beta}.png')
+plt.savefig(f'experiments/{model.name}_val_loss_latent={latent_dim}_lr={lr}_epochs={epochs}_variational_beta={variational_beta}_capacity={capacity}.png')
 plt.clf()
 
 plt.plot(train_recon_loss, label='train_recon_loss')
 #plt.plot(val_recon_loss, label='val_recon_loss')
 plt.legend()
-plt.savefig(f'experiments/{model.name}_train_recon_loss_latent={latent_dim}_lr={lr}_epochs={epochs}_variational_beta={variational_beta}.png')
+plt.savefig(f'experiments/{model.name}_train_recon_loss_latent={latent_dim}_lr={lr}_epochs={epochs}_variational_beta={variational_beta}_capacity={capacity}.png')
 plt.clf()
 
 #plt.plot(train_recon_loss, label='train_recon_loss')
 plt.plot(val_recon_loss, label='val_recon_loss')
 plt.legend()
-plt.savefig(f'experiments/{model.name}_val_recon_loss_latent={latent_dim}_lr={lr}_epochs={epochs}_variational_beta={variational_beta}.png')
+plt.savefig(f'experiments/{model.name}_val_recon_loss_latent={latent_dim}_lr={lr}_epochs={epochs}_variational_beta={variational_beta}_capacity={capacity}.png')
 plt.clf()
 
 plt.plot(train_kl_loss, label='train_kl_loss')
 #plt.plot(val_kl_loss, label='val_kl_loss')
 plt.legend()
-plt.savefig(f'experiments/{model.name}_train_kl_loss_latent={latent_dim}_lr={lr}_epochs={epochs}_variational_beta={variational_beta}.png')
+plt.savefig(f'experiments/{model.name}_train_kl_loss_latent={latent_dim}_lr={lr}_epochs={epochs}_variational_beta={variational_beta}_capacity={capacity}.png')
 plt.clf()
 
 #plt.plot(train_kl_loss, label='train_kl_loss')
 plt.plot(val_kl_loss, label='val_kl_loss')
 plt.legend()
-plt.savefig(f'experiments/{model.name}_val_kl_loss_latent={latent_dim}_lr={lr}_epochs={epochs}_variational_beta={variational_beta}.png')
+plt.savefig(f'experiments/{model.name}_val_kl_loss_latent={latent_dim}_lr={lr}_epochs={epochs}_variational_beta={variational_beta}_capacity={capacity}.png')
 plt.clf()
 
 # Save the model
-torch.save(model.state_dict(), f'networks/weights/{model.name}_latent={latent_dim}_lr={lr}_epochs={epochs}_variational_beta={variational_beta}.pt')
+torch.save(model.state_dict(), f'networks/weights/{model.name}_latent={latent_dim}_lr={lr}_epochs={epochs}_variational_beta={variational_beta}_capacity={capacity}.pt')
 
 # Evaluate the model
 model.train_()
