@@ -27,15 +27,15 @@ dataset = GraphDataset(root='../data/sub20/graphs')
 # Define the parameters
 params = {
     'distribution_std': 1.,
-    'variational_beta': 0.01,
-    "capacity": 128
+    'variational_beta': 1.,
+    "capacity": 256
 }
 
 input_dim = dataset.num_features
 latent_dim = 32
 model = GRAPH_VAE_V3(input_dim, latent_dim, params).to("cuda")
 # Load weights
-model.load_state_dict(torch.load(f"./networks/weights/GRAPH_VAE_V3_latent=32_lr=1e-06_epochs=50_variational_beta=0.01.pt"))
+model.load_state_dict(torch.load(f"./networks/weights/GRAPH_VAE_V3_latent=32_lr=1e-06_epochs=100_variational_beta=1.0_capacity=256.pt"))
 model.eval()
 model.eval_()
 # Create the DataLoader
