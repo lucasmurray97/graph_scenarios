@@ -188,7 +188,7 @@ results = {
     "roc": sum(roc)/len(roc),
 }
 # Save the results
-with open(f'experiments/{model.name}_results_latent={latent_dim}_lr={lr}_epochs={epochs}_variational_beta={variational_beta}.json', 'w') as f:
+with open(f'experiments/{model.name}_results_latent={latent_dim}_lr={lr}_epochs={epochs}_variational_beta={variational_beta}_capacity={capacity}.json', 'w') as f:
     json.dump(results, f)
     
 
