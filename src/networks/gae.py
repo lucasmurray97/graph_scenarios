@@ -2,8 +2,13 @@ import torch
 import torch_geometric.transforms as T
 from torch_geometric.nn import GCNConv, GINConv, InnerProductDecoder, VGAE, Sequential
 from torch_geometric.nn.pool import global_mean_pool
+from torch_geometric.utils import negative_sampling
 import torch.nn.functional as F
 from torch.nn import BatchNorm1d
+import sys
+sys.path.append("..")
+from utils import generate_grid_edges
+import random
 
 class ENCODER(torch.nn.Module):
     def __init__(self, input_dim, latent_dim, params):
@@ -48,7 +53,7 @@ class GRAPH_VAE_V3(torch.nn.Module):
 
         self.gae = VGAE(ENCODER(input_dim, latent_dim, params))
         self.pool_layer = global_mean_pool
-
+        self.grid_edges = generate_grid_edges(20)
 
     
     def forward(self, x, edge_index, batch=torch.Tensor([0])):
@@ -57,7 +62,7 @@ class GRAPH_VAE_V3(torch.nn.Module):
     
     def loss(self, x, edge_index, batch=torch.Tensor([0])):
         mu = self.gae.encode(x, edge_index)
-        recon_loss = self.gae.recon_loss(mu, edge_index)
+        recon_loss = self.recon_loss(mu, edge_index)
         kl_loss = self.gae.kl_loss(mu)
         total_loss = recon_loss + self.variational_beta * kl_loss
         #print(total_loss.item(), recon_loss.item(), kl_loss.item())
@@ -66,11 +71,27 @@ class GRAPH_VAE_V3(torch.nn.Module):
     def pool(self, mu, log, batch):
         return self.pool_layer(mu, batch), self.pool_layer(log, batch)
     
+    def recon_loss(self, x, edge_index, batch=torch.Tensor([0])):
+        print(batch.original_ids)
+
+        current_edges_set = set(map(tuple, edge_index.t().tolist()))
+        all_edges_set = set(map(tuple, self.grid_edges))
+        
+        # Find edges in all_possible_edges that are not in current edges
+        missing_edges_set = all_edges_set - current_edges_set
+
+        missing_edges = random.choices(list(missing_edges_set), k=edge_index.shape[1])
+        # Convert back to edge_index format
+        missing_edges = torch.tensor(list(missing_edges), dtype=torch.long).t()
+        loss = self.gae.recon_loss(x, pos_edge_index=edge_index, neg_edge_index=missing_edges)
+        return loss
+    
     def train_(self):
         self.gae.training = True
     
     def eval_(self):
         self.gae.training = False
+
     
     
     

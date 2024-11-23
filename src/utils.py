@@ -32,14 +32,12 @@ class GraphDataset(Dataset):
     def __getitem__(self, idx):
         # load the pickle file and return a PyG Graph object corresponding to the idx file
         G = pickle.load(open(f'{self.ids[idx]}', 'rb'))
-        ordered_nodes = sorted(G.nodes())
-        mapping = {int(node): i for i, node in enumerate(ordered_nodes)}
-        ordered_G = nx.relabel_nodes(G, mapping)
-        pyg_graph = from_networkx(ordered_G)
-        pyg_graph.original_ids = torch.tensor(list(mapping.keys()), dtype=torch.int)
+        for node in G.nodes():
+            G.nodes[node]['original_ids'] = node - 1
+        pyg_graph = from_networkx(G)
         pyg_graph.original_graph = torch.tensor(float(self.ids[idx].split("_")[1].split(".pickle")[0]))
         # List nodes in pyg_graph:
-        pyg_graph.x = torch.tensor([1 for i in range(len(ordered_G))], dtype=torch.float).unsqueeze(1)
+        pyg_graph.x = torch.tensor([1 for _ in range(len(G))], dtype=torch.float).unsqueeze(1)
         return pyg_graph
     
     
@@ -55,4 +53,24 @@ def reconstruct_matrix(graph_list):
     # We concatenate the list of matrices into a tensor:
     return torch.cat(global_matrix)
     
+def generate_grid_edges(grid_size):
+    edges = []
+    for i in range(grid_size):
+        for j in range(grid_size):
+            node = i * grid_size + j
+            neighbors = [
+                (i - 1, j),  # up
+                (i + 1, j),  # down
+                (i, j - 1),  # left
+                (i, j + 1),  # right
+                (i - 1, j - 1),  # top-left diagonal
+                (i - 1, j + 1),  # top-right diagonal
+                (i + 1, j - 1),  # bottom-left diagonal
+                (i + 1, j + 1),  # bottom-right diagonal
+            ]
+            for ni, nj in neighbors:
+                if 0 <= ni < grid_size and 0 <= nj < grid_size:
+                    neighbor_node = ni * grid_size + nj
+                    edges.append((node, neighbor_node))
+    return edges
     
