@@ -99,7 +99,7 @@ for _ in tqdm(range(epochs)):
         output, mu, log = model(batch.x, batch.edge_index, batch.batch)
         graph_list = batch.to_data_list()
         #true_adjacency = reconstruct_matrix(graph_list).to(device)
-        recon_loss, kl_loss, loss = model.loss(batch.x, batch.edge_index, batch.batch)
+        recon_loss, kl_loss, loss = model.loss(batch.x, batch.edge_index, batch.to_data_list()) 
         loss.backward()
         optimizer.step()
         train_epoch_loss += loss.item()
@@ -119,7 +119,7 @@ for _ in tqdm(range(epochs)):
         output, mu, log = model(batch.x, batch.edge_index, batch.batch)
         graph_list = batch.to_data_list()
         #true_adjacency = reconstruct_matrix(graph_list).to(device)
-        recon_loss, kl_loss, loss = model.loss(batch.x, batch.edge_index, batch.batch)
+        recon_loss, kl_loss, loss = model.loss(batch.x, batch.edge_index, batch.to_data_list())
         val_epoch_loss += loss.item()
         val_epoch_recon_loss += recon_loss.item()
         val_epoch_kl_loss += kl_loss.item()
@@ -176,15 +176,19 @@ model.eval_()
 for i, batch in enumerate(val_loader):
     batch = batch.to(device)
     output, mu, log = model(batch.x, batch.edge_index, batch.batch)
-    current_edges_set = set(map(tuple, batch.edge_index.t().tolist()))
-    all_edges_set = set(map(tuple, model.grid_edges))
-    
-    # Find edges in all_possible_edges that are not in current edges
-    missing_edges_set = all_edges_set - current_edges_set
+    missing = []
+    for b in batch.to_data_list():
+        current_edges_set = set(map(tuple, b.original_ids[b.edge_index].t().tolist()))
+        all_edges_set = set(map(tuple, model.grid_edges))
+        
+        # Find edges in all_possible_edges that are not in current edges
+        missing_edges_set = all_edges_set - current_edges_set
 
-    missing_edges = random.choices(list(missing_edges_set), k=batch.edge_index.shape[1])
-    # Convert back to edge_index format
-    missing_edges = torch.tensor(list(missing_edges), dtype=torch.long).t()
+        missing_edges = random.choices(list(missing_edges_set), k=b.edge_index.shape[1])
+        # Convert back to edge_index format
+        missing_edges = torch.tensor(list(missing_edges), dtype=torch.long).t()
+        missing.append(missing_edges)
+    missing_edges = torch.cat(missing, dim=1)
     roc_, acc = model.gae.test(mu.cpu(), batch.edge_index.cpu(), missing_edges.cpu())
     accuracy.append(acc)
     roc.append(roc_)
