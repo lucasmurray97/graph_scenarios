@@ -67,8 +67,8 @@ dataset = GraphDataset(root='../data/sub20/graphs')
 
 # Split the dataset into training, validation, and test sets
 print("Splitting the dataset")
-train_size = int(0.2 * len(dataset))
-val_size = int(0.05 * len(dataset))
+train_size = int(0.8 * len(dataset))
+val_size = int(0.1 * len(dataset))
 test_size = len(dataset) - train_size - val_size
 print(f"Train size: {train_size}, Val size: {val_size}")
 
@@ -136,23 +136,41 @@ for _ in tqdm(range(epochs)):
 
 # Plot the training and validation losses
 plt.plot(train_loss, label='train_loss')
+#plt.plot(val_loss, label='val_loss')
+plt.legend()
+plt.savefig(f'experiments/{model.name}_train_loss_latent={latent_dim}_lr={lr}_epochs={epochs}_variational_beta={variational_beta}_capacity={capacity}_alpha={alpha}_gamma={gamma}.png')
+plt.clf()
+
+# Plot the training and validation losses
+#plt.plot(train_loss, label='train_loss')
 plt.plot(val_loss, label='val_loss')
 plt.legend()
-plt.savefig(f'experiments/{model.name}_loss_latent={latent_dim}_lr={lr}_epochs={epochs}_variational_beta={variational_beta}_capacity={capacity}_alpha={alpha}_gamma={gamma}.png')
+plt.savefig(f'experiments/{model.name}_val_loss_latent={latent_dim}_lr={lr}_epochs={epochs}_variational_beta={variational_beta}_capacity={capacity}_alpha={alpha}_gamma={gamma}.png')
 plt.clf()
 
 plt.plot(train_recon_loss, label='train_recon_loss')
+#plt.plot(val_recon_loss, label='val_recon_loss')
+plt.legend()
+plt.savefig(f'experiments/{model.name}_train_recon_loss_latent={latent_dim}_lr={lr}_epochs={epochs}_variational_beta={variational_beta}_capacity={capacity}_alpha={alpha}_gamma={gamma}.png')
+plt.clf()
+
+#plt.plot(train_recon_loss, label='train_recon_loss')
 plt.plot(val_recon_loss, label='val_recon_loss')
 plt.legend()
-plt.savefig(f'experiments/{model.name}_recon_loss_latent={latent_dim}_lr={lr}_epochs={epochs}_variational_beta={variational_beta}_capacity={capacity}_alpha={alpha}_gamma={gamma}.png')
+plt.savefig(f'experiments/{model.name}_val_recon_loss_latent={latent_dim}_lr={lr}_epochs={epochs}_variational_beta={variational_beta}_capacity={capacity}_alpha={alpha}_gamma={gamma}.png')
 plt.clf()
 
 
-
 plt.plot(train_kl_loss, label='train_kl_loss')
+#plt.plot(val_kl_loss, label='val_kl_loss')
+plt.legend()
+plt.savefig(f'experiments/{model.name}_train_kl_loss_latent={latent_dim}_lr={lr}_epochs={epochs}_variational_beta={variational_beta}_capacity={capacity}_alpha={alpha}_gamma={gamma}.png')
+plt.clf()
+
+#plt.plot(train_kl_loss, label='train_kl_loss')
 plt.plot(val_kl_loss, label='val_kl_loss')
 plt.legend()
-plt.savefig(f'experiments/{model.name}_kl_loss_latent={latent_dim}_lr={lr}_epochs={epochs}_variational_beta={variational_beta}_capacity={capacity}_alpha={alpha}_gamma={gamma}.png')
+plt.savefig(f'experiments/{model.name}_val_kl_loss_latent={latent_dim}_lr={lr}_epochs={epochs}_variational_beta={variational_beta}_capacity={capacity}_alpha={alpha}_gamma={gamma}.png')
 plt.clf()
 
 
@@ -192,9 +210,9 @@ for i, batch in enumerate(val_loader):
 import json
 results = {
     "accuracy": sum(accuracy)/len(accuracy),
-    "precision": precision/len(precision),
-    "recall": recall/len(recall),
-    "f1": f1/len(f1),
+    "precision": sum(precision)/len(precision),
+    "recall": sum(recall)/len(recall),
+    "f1": sum(f1)/len(f1),
 }
 # Save the results
 with open(f'experiments/{model.name}_results_latent={latent_dim}_lr={lr}_epochs={epochs}_variational_beta={variational_beta}_capacity={capacity}_alpha={alpha}_gamma={gamma}.json', 'w') as f:
