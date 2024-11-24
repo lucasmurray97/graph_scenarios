@@ -171,7 +171,9 @@ torch.save(model.state_dict(), f'networks/weights/{model.name}_latent={latent_di
 # Evaluate the model
 model.train_()
 accuracy = []
-roc = []
+precision = []
+recall = []
+f1 = []
 model.eval_()
 for i, batch in enumerate(val_loader):
     batch = batch.to(device)
@@ -189,16 +191,22 @@ for i, batch in enumerate(val_loader):
         missing_edges = torch.tensor(list(missing_edges), dtype=torch.long).t()
         missing.append(missing_edges)
     missing_edges = torch.cat(missing, dim=1)
-    roc_, acc = model.gae.test(mu.cpu(), batch.edge_index.cpu(), missing_edges.cpu())
+    acc, prec, rec, f1_ = model.test(mu.cpu(), batch.edge_index.cpu(), missing_edges.cpu())
     accuracy.append(acc)
-    roc.append(roc_)
+    precision.append(prec)
+    recall.append(rec)
+    f1.append(f1_)
 print(f"Accuracy: {sum(accuracy)/len(accuracy)}")
-print(f"ROC: {sum(roc)/len(roc)}")
+print(f"Precision: {sum(precision)/len(precision)}")
+print(f"Recall: {sum(recall)/len(recall)}")
+print(f"F1: {sum(f1)/len(f1)}")
 # write down results into a json
 import json
 results = {
     "accuracy": sum(accuracy)/len(accuracy),
-    "roc": sum(roc)/len(roc),
+    "precision": sum(precision)/len(precision),
+    "recall": sum(recall)/len(recall),
+    "f1": sum(f1)/len(f1),
 }
 # Save the results
 with open(f'experiments/{model.name}_results_latent={latent_dim}_lr={lr}_epochs={epochs}_variational_beta={variational_beta}_capacity={capacity}.json', 'w') as f:

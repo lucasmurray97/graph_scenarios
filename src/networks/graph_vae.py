@@ -144,6 +144,7 @@ class GRAPH_VAE(torch.nn.Module):
             loss = alpha_t * modulating_factor * bce_loss
             loss = loss.sum()
         return loss
+    
 
         
 

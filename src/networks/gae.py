@@ -65,7 +65,6 @@ class GRAPH_VAE_V3(torch.nn.Module):
         recon_loss = self.recon_loss(mu, edge_index, batch)
         kl_loss = self.gae.kl_loss(mu)
         total_loss = recon_loss + self.variational_beta * kl_loss
-        print(total_loss.item(), recon_loss.item(), self.variational_beta * kl_loss.item())
         return  recon_loss, kl_loss, total_loss
     
     def pool(self, mu, log, batch):
@@ -93,6 +92,33 @@ class GRAPH_VAE_V3(torch.nn.Module):
     
     def eval_(self):
         self.gae.training = False
+
+    def test(self, z, pos_edge_index,
+             neg_edge_index):
+        r"""Given latent variables :obj:`z`, positive edges
+        :obj:`pos_edge_index` and negative edges :obj:`neg_edge_index`,
+        computes area under the ROC curve (AUC) and average precision (AP)
+        scores.
+
+        Args:
+            z (torch.Tensor): The latent space :math:`\mathbf{Z}`.
+            pos_edge_index (torch.Tensor): The positive edges to evaluate
+                against.
+            neg_edge_index (torch.Tensor): The negative edges to evaluate
+                against.
+        """
+        from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
+
+        pos_y = z.new_ones(pos_edge_index.size(1))
+        neg_y = z.new_zeros(neg_edge_index.size(1))
+        y = torch.cat([pos_y, neg_y], dim=0)
+
+        pos_pred = self.gae.decoder(z, pos_edge_index, sigmoid=True)
+        neg_pred = self.gae.decoder(z, neg_edge_index, sigmoid=True)
+        pred = torch.cat([pos_pred, neg_pred], dim=0)
+
+        y, pred = y.detach().cpu().numpy(), (pred >= 0.5).detach().cpu().numpy()
+        return accuracy_score(y, pred), precision_score(y, pred), recall_score(y, pred), f1_score(y, pred)
 
     
     
