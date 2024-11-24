@@ -23,24 +23,24 @@ class GRAPH_VAE(torch.nn.Module):
         self.capacity = params['capacity']
 
         # Define MLP for GINConv
-        def make_mlp(input_dim, hidden_dim):
+        def make_mlp(input_dim, hidden_dim, final=False):
             return Sequential(
                 Linear(input_dim, hidden_dim),
                 ReLU(),
                 Linear(hidden_dim, hidden_dim),
-                ReLU()
+                ReLU() if not final else torch.nn.Identity()
             )
 
         # Encoder:
         self.conv1_mu = GINConv(make_mlp(input_dim, self.capacity))
         self.conv2_mu = GINConv(make_mlp(self.capacity, self.capacity * 2))
         self.conv3_mu = GINConv(make_mlp(self.capacity * 2, self.capacity * 2))
-        self.conv4_mu = GINConv(make_mlp(self.capacity * 2, latent_dim))
+        self.conv4_mu = GINConv(make_mlp(self.capacity * 2, latent_dim, True))
 
         self.conv1_log = GINConv(make_mlp(input_dim, self.capacity))
         self.conv2_log = GINConv(make_mlp(self.capacity, self.capacity * 2))
         self.conv3_log = GINConv(make_mlp(self.capacity * 2, self.capacity * 2))
-        self.conv4_log = GINConv(make_mlp(self.capacity * 2, latent_dim))
+        self.conv4_log = GINConv(make_mlp(self.capacity * 2, latent_dim, True))
         self.pool = global_mean_pool
 
         # Decoder:
