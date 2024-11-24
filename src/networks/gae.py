@@ -62,27 +62,29 @@ class GRAPH_VAE_V3(torch.nn.Module):
     
     def loss(self, x, edge_index, batch=torch.Tensor([0])):
         mu = self.gae.encode(x, edge_index)
-        recon_loss = self.recon_loss(mu, edge_index)
+        recon_loss = self.recon_loss(mu, edge_index, batch)
         kl_loss = self.gae.kl_loss(mu)
         total_loss = recon_loss + self.variational_beta * kl_loss
-        #print(total_loss.item(), recon_loss.item(), kl_loss.item())
+        print(total_loss.item(), recon_loss.item(), self.variational_beta * kl_loss.item())
         return  recon_loss, kl_loss, total_loss
     
     def pool(self, mu, log, batch):
         return self.pool_layer(mu, batch), self.pool_layer(log, batch)
     
     def recon_loss(self, x, edge_index, batch=torch.Tensor([0])):
-        print(batch.original_ids)
+        missing = []
+        for b in batch:
+            current_edges_set = set(map(tuple, b.original_ids[b.edge_index].t().tolist()))
+            all_edges_set = set(map(tuple, self.grid_edges))
+            
+            # Find edges in all_possible_edges that are not in current edges
+            missing_edges_set = all_edges_set - current_edges_set
 
-        current_edges_set = set(map(tuple, edge_index.t().tolist()))
-        all_edges_set = set(map(tuple, self.grid_edges))
-        
-        # Find edges in all_possible_edges that are not in current edges
-        missing_edges_set = all_edges_set - current_edges_set
-
-        missing_edges = random.choices(list(missing_edges_set), k=edge_index.shape[1])
-        # Convert back to edge_index format
-        missing_edges = torch.tensor(list(missing_edges), dtype=torch.long).t()
+            missing_edges = random.choices(list(missing_edges_set), k=b.edge_index.shape[1])
+            # Convert back to edge_index format
+            missing_edges = torch.tensor(list(missing_edges), dtype=torch.long).t()
+            missing.append(missing_edges)
+        missing_edges = torch.cat(missing, dim=1)
         loss = self.gae.recon_loss(x, pos_edge_index=edge_index, neg_edge_index=missing_edges)
         return loss
     
