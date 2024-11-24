@@ -1,8 +1,9 @@
 import torch
 import torch_geometric.transforms as T
-from torch_geometric.nn import GCNConv
-from torch_geometric.nn.pool import global_mean_pool
+from torch_geometric.nn import GCNConv, GINConv
+from torch_geometric.nn.pool import global_mean_pool, global_add_pool
 import torch.nn.functional as F
+from torch.nn import Sequential, Linear, ReLU
 # Add .. to sys path
 import sys
 sys.path.append("..")
@@ -21,13 +22,25 @@ class GRAPH_VAE(torch.nn.Module):
         self.gamma = params['gamma']
         self.capacity = params['capacity']
 
+        # Define MLP for GINConv
+        def make_mlp(input_dim, hidden_dim):
+            return Sequential(
+                Linear(input_dim, hidden_dim),
+                ReLU(),
+                Linear(hidden_dim, hidden_dim),
+                ReLU()
+            )
+
         # Encoder:
-        self.conv1_mu = GCNConv(input_dim, self.capacity)
-        self.conv2_mu = GCNConv(self.capacity , self.capacity * 2)
-        self.conv3_mu = GCNConv(self.capacity * 2 , latent_dim)
-        self.conv1_log = GCNConv(input_dim, self.capacity)
-        self.conv2_log = GCNConv(self.capacity , self.capacity * 2)
-        self.conv3_log = GCNConv(self.capacity * 2 , latent_dim)
+        self.conv1_mu = GINConv(make_mlp(input_dim, self.capacity))
+        self.conv2_mu = GINConv(make_mlp(self.capacity, self.capacity * 2))
+        self.conv3_mu = GINConv(make_mlp(self.capacity * 2, self.capacity * 2))
+        self.conv4_mu = GINConv(make_mlp(self.capacity * 2, latent_dim))
+
+        self.conv1_log = GINConv(make_mlp(input_dim, self.capacity))
+        self.conv2_log = GINConv(make_mlp(self.capacity, self.capacity * 2))
+        self.conv3_log = GINConv(make_mlp(self.capacity * 2, self.capacity * 2))
+        self.conv4_log = GINConv(make_mlp(self.capacity * 2, latent_dim))
         self.pool = global_mean_pool
 
         # Decoder:
@@ -43,19 +56,23 @@ class GRAPH_VAE(torch.nn.Module):
     def encode(self, x, edge_index, batch=torch.Tensor([0])):
         #print(x.shape, edge_index.shape, batch.shape)
         mu = self.conv1_mu(x, edge_index).relu()
+        #print(mu)
         #print(mu.shape)
         mu = self.conv2_mu(mu, edge_index).relu()
         #print(mu.shape)
-        mu = self.conv3_mu(mu, edge_index)
+        mu = self.conv3_mu(mu, edge_index).relu()
         #print(mu.shape)
+        mu = self.conv4_mu(mu, edge_index)
+        #print(mu)
         mu = self.pool(mu, batch)
-        #print(mu.shape)
+        #print(mu)
         log = self.conv1_log(x, edge_index).relu()
         #print(x.shape)
         log = self.conv2_log(log, edge_index).relu()
         #print(x.shape)
-        log = self.conv3_log(log, edge_index)
+        log = self.conv3_log(log, edge_index).relu()
         #print(x.shape)
+        log = self.conv4_log(log, edge_index)
         log = self.pool(log, batch)
         #print(x.shape)
         return mu, log
@@ -64,10 +81,11 @@ class GRAPH_VAE(torch.nn.Module):
         z = F.relu(self.fc1(z))
         #print(z.shape)
         z = F.relu(self.fc2(z))
-        #print(z.shape)
+        #print(z)
         z = F.relu(self.fc3(z))
-        #print(z.shape)
+        #print(z)
         z = self.fc4(z).sigmoid()
+        #print(z)
         return z
     
     def latent_sample(self, mu, logvar):
