@@ -83,8 +83,15 @@ class GRAPH_VAE_V3(torch.nn.Module):
             # Convert back to edge_index format
             missing_edges = torch.tensor(list(missing_edges), dtype=torch.long).t()
             missing.append(missing_edges)
-        missing_edges = torch.cat(missing, dim=1)
-        loss = self.gae.recon_loss(x, pos_edge_index=edge_index, neg_edge_index=missing_edges)
+        missing_edges = torch.cat(missing, dim=1).cuda()
+        try:
+            value = (x[missing_edges[0]] * x[missing_edges[1]]).sum(dim=1)
+            loss = self.gae.recon_loss(x, pos_edge_index=edge_index, neg_edge_index=missing_edges)
+        except:
+            print(x.shape)
+            print(missing_edges.shape)
+            print(missing_edges)
+            loss = self.gae.recon_loss(x, pos_edge_index=edge_index)
         return loss
     
     def train_(self):

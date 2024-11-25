@@ -101,6 +101,7 @@ class GRAPH_VAE(torch.nn.Module):
     def loss(self, output, mu, logvar, batch):
         recon_loss = self.recon_loss(output, batch)
         kldivergence = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp())
+        print(recon_loss, kldivergence * self.variational_beta)
         return recon_loss, kldivergence, recon_loss + self.variational_beta * kldivergence
     
     def forward(self, x, edge_index, batch):
