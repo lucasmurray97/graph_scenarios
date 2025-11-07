@@ -1,63 +1,93 @@
-import torch
-import torch.nn as nn
-import torchvision
-import torchvision.transforms as T
-import torchvision.datasets as D
-import torch.nn.functional as F
-import torch_geometric.transforms as T
-from torch_geometric.nn import GCNConv
-from torch_geometric.utils import train_test_split_edges, to_dense_adj, to_networkx
-import sys
-#add path to utils
-sys.path.append('../../')
-from utils import GraphDataset, reconstruct_matrix
-from networks.graph_vae import GRAPH_VAE
-from networks.graph_vae_v2 import GRAPH_VAE_V2
-from networks.gae import GRAPH_VAE_V3
-from torch_geometric.loader import DataLoader
-import torch.optim as optim
-from torch.utils.data import random_split
-import argparse
-import matplotlib.pyplot as plt
+# extract_embeddings_v3.py
+import os, sys, json
 import numpy as np
-import networkx as nx
+import torch
+from torch_geometric.loader import DataLoader
 
-dataset = GraphDataset(root='../data/sub20/graphs')
+# add your src path if needed
+# sys.path.append('/home/lucas/graph_scenarios/src')
 
-# Define the parameters
+from utils import GraphDatasetV3
+from networks.graph_vae_v3 import GRAPH_VAE_V3
+from tqdm import tqdm
+
+# ---------- config ----------
+ROOT = "/home/lucas/graph_scenarios/data/sub20/graphs"
+WEIGHTS = "networks/weights/GRAPH_VAE_V3_latent=128_lr=0.0002_epochs=1000_variational_beta=0.05_capacity=256_dec_layers=4_edge_layers=4_best.pt"
+OUT_DIR = "embeddings"
+BATCH_SIZE = 64
+LATENT_DIM = 128
+DEVICE = torch.device("cpu")
+
+# must match what you trained with (only the needed bits)
 params = {
-    'distribution_std': 0.1,
-    'variational_beta': 10.,
-    "capacity": 128,
-    'loss': 'focal',
-    'alpha': 0.8,
-    'gamma': 1.0
-}
+    'distribution_std': 1.0,
+    'variational_beta': 0.01,
+    'capacity': 256,
+    'dec_layers': 4,
+    'edge_layers': 4,
+    "edge_pos_weight": 5.4,   # you already use this
+    "edge_neg_weight": 2.0,    # NEW: >1 penalizes negatives → higher precision
+    "edge_loss_lambda": 1.5,
+}    
 
-input_dim = dataset.num_features
-latent_dim = 64
-model = GRAPH_VAE(input_dim, latent_dim, params).to("cuda")
-# Load weights
-model.load_state_dict(torch.load(f"networks/weights/GRAPH_VAE_latent=64_lr=1e-06_epochs=50_variational_beta=10.0_capacity=128_alpha=0.8_gamma=1.0.pt"))
+# ---------- data / model ----------
+dataset = GraphDatasetV3(root=ROOT)
+loader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers = 4)
+
+# input_dim = 5 for (pos2 + alt + slope + fuel_scalar) in your V3 setup
+model = GRAPH_VAE_V3(input_dim=5, latent_dim=LATENT_DIM, params=params, template=dataset.template).to(DEVICE)
+state = torch.load(WEIGHTS, map_location=DEVICE)
+# allow non-strict in case you added buffers/heads later
+model.load_state_dict(state if isinstance(state, dict) else state["model_state_dict"], strict=False)
 model.eval()
-# Create the DataLoader
-loader = DataLoader(dataset, batch_size=1, shuffle=False)
 
-embeddings = []
-correspondance = {}
-for i, batch in enumerate(loader):
-    batch = batch.to("cuda")
-    output, mu, log = model(batch.x, batch.edge_index, batch.batch)
-    embeddings.append((mu.detach().cpu().numpy(), log.detach().cpu().numpy()))
-    correspondance[i] = batch.original_graph.item()
+os.makedirs(OUT_DIR, exist_ok=True)
 
-# Save list of numpy arrays
-np.save("embeddings/embeddings_graph_vae.npy", embeddings)
-# Save correspondance dict
-np.save("embeddings/correspondance_graph_vae.npy", correspondance)
+emb_mu = []
+emb_logvar = []
+correspondence = {}   # idx_in_order -> original graph id (if available)
 
-"""
-# Load embeddings and correspondance
-embeddings = np.load("embeddings/embeddings.npy", allow_pickle=True)
-correspondance = np.load("embeddings/correspondance.npy", allow_pickle=True).item()
-"""
+idx_counter = 0
+with torch.inference_mode():
+    pbar = tqdm(total=len(dataset), desc="Embedding graphs", unit="graph", dynamic_ncols=True)
+    for batch in loader:
+        batch = batch.to(DEVICE, non_blocking=True)
+        # forward: returns (output, mu, logvar)
+        _, mu, log = model(batch.x, batch.edge_index_enc, batch.batch)   # mu/log: [B, z]
+        mu_cpu  = mu.detach().cpu().numpy()
+        log_cpu = log.detach().cpu().numpy()
+
+        # split per-graph even when B>1
+        data_list = batch.to_data_list()
+        for j, g in enumerate(data_list):
+            emb_mu.append(mu_cpu[j])
+            emb_logvar.append(log_cpu[j])
+
+            # try several common field names from your pipeline
+            gid = getattr(g, "original_graph", None)
+            if gid is None: gid = getattr(g, "graph_id", None)
+            if gid is None: gid = getattr(g, "gid", None)
+
+            # normalize to int when possible
+            if torch.is_tensor(gid):
+                gid = int(gid.item())
+            elif isinstance(gid, (np.integer,)):
+                gid = int(gid)
+            correspondence[idx_counter] = gid if gid is not None else idx_counter
+            idx_counter += 1
+        B = batch.num_graphs
+        pbar.update(B) 
+    pbar.close()
+
+
+# ---------- save ----------
+emb_mu  = np.asarray(emb_mu)      # [num_graphs, z]
+emb_log = np.asarray(emb_logvar)  # [num_graphs, z]
+
+np.save(os.path.join(OUT_DIR, "mu_graph_vae_v3.npy"), emb_mu)
+np.save(os.path.join(OUT_DIR, "logvar_graph_vae_v3.npy"), emb_log)
+with open(os.path.join(OUT_DIR, "correspondence_graph_vae_v3.json"), "w") as f:
+    json.dump(correspondence, f, indent=2)
+
+print(f"Saved:\n  {os.path.join(OUT_DIR,'mu_graph_vae_v3.npy')}\n  {os.path.join(OUT_DIR,'logvar_graph_vae_v3.npy')}\n  {os.path.join(OUT_DIR,'correspondence_graph_vae_v3.json')}")

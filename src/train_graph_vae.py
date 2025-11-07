@@ -10,6 +10,7 @@ from torch_geometric.utils import train_test_split_edges, to_dense_adj
 from utils import GraphDataset, reconstruct_matrix
 from networks.graph_vae import GRAPH_VAE
 from networks.graph_vae_v2 import GRAPH_VAE_V2
+from networks.graph_vae_v3 import GRAPH_VAE_V3 as GRAPH_VAE_V4
 from networks.gae import GRAPH_VAE_V3
 from torch_geometric.loader import DataLoader
 import torch.optim as optim
@@ -17,11 +18,12 @@ from torch.utils.data import random_split
 import argparse
 import matplotlib.pyplot as plt
 from torch_geometric.utils import negative_sampling
+import os
 
 from tqdm import tqdm
 parser = argparse.ArgumentParser()
-parser.add_argument('--latent_dim', type=int, required=True)
-parser.add_argument('--epochs', type=int, required=True, default = 100)
+parser.add_argument('--latent_dim', type=int, default = 256)
+parser.add_argument('--epochs', type=int, default = 100)
 parser.add_argument('--lr', type=float, default=0.0001)
 parser.add_argument('--distribution_std', type=float, default=0.1)
 parser.add_argument('--variational_beta', type=float, default=1.)
@@ -60,10 +62,12 @@ models = {
     "v1": GRAPH_VAE,
     "v2": GRAPH_VAE_V2,
     "v3": GRAPH_VAE_V3,
+    "v4": GRAPH_VAE_V4
 }
 
 # Load the dataset
-dataset = GraphDataset(root='../data/sub20/graphs')
+current_dir = os.getcwd()
+dataset = GraphDataset(root=current_dir + '/data/sub20/graphs')
 
 # Split the dataset into training, validation, and test sets
 print("Splitting the dataset")
