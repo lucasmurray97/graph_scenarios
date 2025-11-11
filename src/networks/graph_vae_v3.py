@@ -159,7 +159,7 @@ class GRAPH_VAE_V3(torch.nn.Module):
         if self.training:
             # the reparameterization trick
             std = logvar.mul(0.5).exp_()
-            eps = torch.normal(torch.zeros(std.shape), self.distribution_std).to("cuda")
+            eps = torch.normal(torch.zeros(std.shape), self.distribution_std).to(mu.device)
             sample = mu + (eps * std)
             return sample
         else:
