@@ -13,9 +13,9 @@ from tqdm import tqdm
 
 # ---------- config ----------
 ROOT = "/home/lucas/graph_scenarios/data/sub20/graphs"
-WEIGHTS = "networks/weights/GRAPH_VAE_V3_latent=128_lr=0.0002_epochs=1000_variational_beta=0.05_capacity=256_dec_layers=4_edge_layers=4_best.pt"
+WEIGHTS = "networks/weights/GRAPH_VAE_V3_UNDIR_latent=128_lr=0.0005_epochs=2000_variational_beta=0.05_capacity=256_dec_layers=4_enc_layers=3_ign_layers=2_edge_layers=4_best.pt"
 OUT_DIR = "embeddings"
-BATCH_SIZE = 64
+BATCH_SIZE = 32
 LATENT_DIM = 128
 DEVICE = torch.device("cpu")
 
@@ -26,14 +26,16 @@ params = {
     'capacity': 256,
     'dec_layers': 4,
     'edge_layers': 4,
-    "edge_pos_weight": 5.4,   # you already use this
-    "edge_neg_weight": 2.0,    # NEW: >1 penalizes negatives → higher precision
+    'ign_layers': 2,
+    "edge_pos_weight": 1.0,   # you already use this
+    "edge_neg_weight": 1.0,    # NEW: >1 penalizes negatives → higher precision
     "edge_loss_lambda": 1.5,
+    "ign_loss_lambda": 0.005,
 }    
 
 # ---------- data / model ----------
 dataset = GraphDatasetV3(root=ROOT)
-loader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers = 4)
+loader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers = 2)
 
 # input_dim = 5 for (pos2 + alt + slope + fuel_scalar) in your V3 setup
 model = GRAPH_VAE_V3(input_dim=5, latent_dim=LATENT_DIM, params=params, template=dataset.template).to(DEVICE)

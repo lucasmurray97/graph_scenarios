@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch_geometric.nn import GCNConv, global_mean_pool
+from torch_geometric.nn import GCNConv, SAGEConv, global_mean_pool, Sequential
 
 
 class GRAPH_VAE_V3(nn.Module):
@@ -39,20 +39,14 @@ class GRAPH_VAE_V3(nn.Module):
         self.N = int(template.Nmax)
 
         # ---- slot embedding (to avoid identical node features)
-        self.d_slot = int(params.get("d_slot", 16))
+        self.d_slot = int(params.get("d_slot", 256))
         self.slot_emb = nn.Embedding(self.N, self.d_slot)
 
         # ---------------- Encoder ----------------
-        h1, h2 = C, 2 * C
-        self.conv1_mu  = GCNConv(input_dim, h1)
-        self.conv2_mu  = GCNConv(h1, h2)
-        self.conv3_mu  = GCNConv(h2, latent_dim)
-
-        self.conv1_log = GCNConv(input_dim, h1)
-        self.conv2_log = GCNConv(h1, h2)
-        self.conv3_log = GCNConv(h2, latent_dim)
-
-        self.pool = global_mean_pool
+        enc_layers  = int(params.get("enc_layers", 2))     # node trunk depth
+        self.mu_convs, self.mu_norms = self.build_sage_tower(input_dim, latent_dim, C, enc_layers)
+        self.lv_convs, self.lv_norms = self.build_sage_tower(input_dim, latent_dim, C, enc_layers)
+        self.p_drop = 0.2
 
         # ---------------- Decoder ----------------
 
@@ -61,6 +55,7 @@ class GRAPH_VAE_V3(nn.Module):
         dec_h  = 2 * C
         dec_layers  = int(params.get("dec_layers", 2))     # node trunk depth
         ign_layers = int(params.get("ign_layers", 2))    # edge MLP depth
+        edge_layers = int(params.get("edge_layers", 2))    # edge MLP depth
         residual    = bool(params.get("dec_residual", True))
         norm        = params.get("dec_norm", "layer")      # "layer" or None
 
@@ -71,15 +66,21 @@ class GRAPH_VAE_V3(nn.Module):
             activation=nn.ReLU(), residual=residual, norm=norm
         )
 
-        self.edge_proj = nn.Linear(dec_h, dec_h, bias=False)
+        self.edge_proj = DeepMLP(
+            in_dim=dec_h, hidden=2 * dec_h, out_dim=dec_h,
+            num_layers=edge_layers, dropout=dp,
+            activation=nn.ReLU(), residual=residual, norm=norm
+        )
 
         # Ignition head: scalar per node → softmax across N
         self.ignition_head = DeepMLP(
-            in_dim=dec_h, hidden=dec_h, out_dim=1,
+            in_dim=dec_h, hidden=2 * dec_h, out_dim=1,
             num_layers=ign_layers, dropout=dp,
             activation=nn.ReLU(), residual=residual, norm=norm
         )
 
+        self.edge_scale = nn.Parameter(torch.tensor(5.0))
+        self.edge_bias  = nn.Parameter(torch.tensor(0.0))
 
 
         # Cache normalized positions
@@ -97,21 +98,60 @@ class GRAPH_VAE_V3(nn.Module):
         self.register_buffer("undir_e2",  torch.tensor(dir_e2, dtype=torch.long))  # b→a (or -1)
 
     # --------- VAE utils ---------
+    def build_sage_tower(self, in_dim, out_dim, hidden_dim, num_layers):
+        """
+        Returns (convs, norms) for a SAGE tower with `num_layers` layers.
+        Layout:
+        - if num_layers == 1: in_dim -> out_dim
+        - else: in_dim -> hidden ... -> hidden -> out_dim
+        Norms: LayerNorm after every hidden layer; Identity on the final (latent) layer.
+        """
+        convs = nn.ModuleList()
+        norms = nn.ModuleList()
+
+        if num_layers == 1:
+            convs.append(SAGEConv(in_dim, out_dim, aggr='mean'))
+            norms.append(nn.Identity())  # no norm on final latent layer
+        else:
+            # first: in -> hidden
+            convs.append(SAGEConv(in_dim, hidden_dim, aggr='mean'))
+            norms.append(nn.LayerNorm(hidden_dim))
+            # middle: hidden -> hidden (num_layers - 2 times)
+            for _ in range(num_layers - 2):
+                convs.append(SAGEConv(hidden_dim, hidden_dim, aggr='mean'))
+                norms.append(nn.LayerNorm(hidden_dim))
+            # last: hidden -> latent
+            convs.append(SAGEConv(hidden_dim, out_dim, aggr='mean'))
+            norms.append(nn.Identity())  # final layer (latent), no norm
+        return convs, norms
+    
+    def _encode_tower(self, x, edge_index, batch, convs, norms):
+        L = len(convs)
+        for i, (conv, norm) in enumerate(zip(convs, norms)):
+            x = conv(x, edge_index)
+            x = norm(x)
+            # apply nonlinearity/dropout on all but the final (latent) layer
+            if i < L - 1:
+                x = F.relu(x, inplace=True)
+                x = F.dropout(x, p=self.enc_p_drop, training=self.training)
+        return global_mean_pool(x, batch)
+
+    def _tower(self, x, edge_index, batch, convs, norms):
+        for conv, norm in zip(convs, norms):
+            x = conv(x, edge_index)
+            x = norm(x)
+            x = F.relu(x, inplace=True)
+            x = F.dropout(x, p=self.p_drop, training=self.training)
+        return global_mean_pool(x, batch)  # graph-level embedding
+    
     def broadcast_latent(self, z: torch.Tensor) -> torch.Tensor:
         if z.dim() == 1:
             z = z.unsqueeze(0)
         return z.unsqueeze(1).expand(-1, self.N, -1)  # [B, N, zdim]
 
     def encode(self, x, edge_index, batch):
-        mu  = self.conv1_mu(x, edge_index).relu()
-        mu  = self.conv2_mu(mu, edge_index).relu()
-        mu  = self.conv3_mu(mu, edge_index)
-        mu  = self.pool(mu, batch)
-
-        log = self.conv1_log(x, edge_index).relu()
-        log = self.conv2_log(log, edge_index).relu()
-        log = self.conv3_log(log, edge_index)
-        log = self.pool(log, batch)
+        mu  = self._tower(x, edge_index, batch, self.mu_convs, self.mu_norms)
+        log = self._tower(x, edge_index, batch, self.lv_convs, self.lv_norms)
         return mu, log
 
     def latent_sample(self, mu, logvar):
@@ -147,7 +187,9 @@ class GRAPH_VAE_V3(nn.Module):
         t_idx = self.undir_dst  # [E_u]
         Hs = Q[:, s_idx, :]      # [B, E_u, dec_h]
         Ht = Q[:, t_idx, :]      # [B, E_u, dec_h]
-        edges_u_logit = (Hs * Ht).sum(dim=-1)  # [B, E_u]
+        cos = (Hs * Ht).sum(dim=-1)              # [-1, 1] ideally, but yours ~0.97..1.0
+        edges_u_logit = self.edge_scale * cos + self.edge_bias
+ 
 
         return edges_u_logit, ign_logits
 

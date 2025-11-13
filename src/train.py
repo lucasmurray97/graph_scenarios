@@ -6,7 +6,6 @@ import torchvision.datasets as D
 import torch.nn.functional as F
 import torch_geometric.transforms as T
 from torch_geometric.nn import GCNConv
-from torch_geometric.utils import train_test_split_edges, to_dense_adj
 from utils import (
     GraphDataset, reconstruct_matrix, GraphDatasetV3,
     evaluate_all, metrics_on_batch_tm, estimate_edge_pos_weight, set_seed
@@ -49,7 +48,9 @@ parser.add_argument('--batch_size', type=int, default=16)
 parser.add_argument('--model', type=str, default='v3')
 parser.add_argument('--capacity', type=int, default=8)
 parser.add_argument('--dec_layers', type=int, default=2)
+parser.add_argument('--enc_layers', type=int, default=2)
 parser.add_argument('--ign_layers', type=int, default=2)
+parser.add_argument('--edge_layers', type=int, default=2)
 parser.add_argument('--dec_residual', type=bool, default=True)
 args = parser.parse_args()
 
@@ -62,7 +63,9 @@ batch_size = args.batch_size
 model_name = args.model
 capacity = args.capacity
 dec_layers = args.dec_layers
+enc_layers = args.enc_layers
 ign_layers = args.ign_layers
+edge_layers = args.edge_layers
 dec_residual = args.dec_residual
 
 # --------------------
@@ -73,14 +76,16 @@ params = {
     'variational_beta': variational_beta,
     'capacity': capacity,
     'dec_layers': dec_layers,
+    'enc_layers': enc_layers,
     'ign_layers': ign_layers,
+    'edge_layers': edge_layers,
     'dec_residual': dec_residual,
     # edge loss shaping
-    "edge_pos_weight": 2,
+    "edge_pos_weight": 1,
     "edge_neg_weight": 1,
-    "edge_loss_lambda":1,
+    "edge_loss_lambda": 1,
     # optional ignition weight (if used inside your loss)
-    "ign_loss_lambda": 0.1,
+    "ign_loss_lambda": 0.005,
 }
 models = {
     "v1": GRAPH_VAE,
@@ -95,8 +100,8 @@ root = "../data/sub20/graphs"
 dataset = GraphDatasetV3(root=root)
 
 print("Splitting the dataset")
-train_size = int(0.01 * len(dataset))
-val_size   = int(0.01 * len(dataset))
+train_size = int(0.8 * len(dataset))
+val_size   = int(0.1 * len(dataset))
 test_size  = len(dataset) - train_size - val_size
 print(f"Train size: {train_size}, Val size: {val_size}")
 
@@ -106,7 +111,7 @@ train_dataset, val_dataset, test_dataset = random_split(
 )
 
 # If you ever see CUDA + fork issues, set num_workers=0 or ensure CPU-only ops in __getitem__
-train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True,  num_workers=4, pin_memory=True)
+train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True,  num_workers=6, pin_memory=True)
 val_loader   = DataLoader(val_dataset,   batch_size=batch_size, shuffle=False, num_workers=4, pin_memory=True)
 test_loader  = DataLoader(test_dataset,  batch_size=batch_size, shuffle=False, num_workers=4, pin_memory=True)
 
@@ -120,7 +125,7 @@ optimizer = optim.Adam(model.parameters(), lr=lr)
 
 print(f"Number of parameters: {sum(p.numel() for p in model.parameters() if p.requires_grad)}")
 
-run_name = f"{model.name}_UNDIR_ld={latent_dim}_cap={capacity}_vb={variational_beta}_bs={batch_size}_lr={lr}_dec_layers={dec_layers}_ign_layers={ign_layers}"
+run_name = f"{model.name}_UNDIR_ld={latent_dim}_cap={capacity}_vb={variational_beta}_bs={batch_size}_lr={lr}_dec_layers={dec_layers}_enc_layers={enc_layers}_ign_layers={ign_layers}_edge_layers={edge_layers}"
 writer = SummaryWriter(log_dir=f"runs/{run_name}")
 
 # --------------------
@@ -137,7 +142,7 @@ val_kl_loss = []
 model.train()
 global_step = 0
 val_global_step = 0
-ckpt_base = f'networks/weights/{model.name}_UNDIR_latent={latent_dim}_lr={lr}_epochs={epochs}_variational_beta={variational_beta}_capacity={capacity}_dec_layers={dec_layers}_ign_layers={ign_layers}'
+ckpt_base = f'networks/weights/{model.name}_UNDIR_latent={latent_dim}_lr={lr}_epochs={epochs}_variational_beta={variational_beta}_capacity={capacity}_dec_layers={dec_layers}_enc_layers={enc_layers}_ign_layers={ign_layers}_edge_layers={edge_layers}'
 best_val_loss = float("inf")
 
 try:
@@ -156,9 +161,7 @@ try:
             batch = batch.to(device, non_blocking=True)
 
             output, mu, log = model(batch.x, batch.edge_index_enc, batch.batch)
-
-            # Expect: recon, kl, total, loss_dict
-            # loss_dict may contain {"edge": ..., "ign": ...}
+            
             recon_loss, kl_loss, loss, loss_dict = model.loss(output, batch, mu, log, dataset.template)
 
             loss.backward()
@@ -275,19 +278,19 @@ try:
     plt.plot(train_loss, label='train_loss')
     plt.plot(val_loss, label='val_loss')
     plt.legend()
-    plt.savefig(f'experiments/{model.name}_UNDIR_train_loss_latent={latent_dim}_lr={lr}_epochs={epochs}_vb={variational_beta}_cap={capacity}_dec_layers={dec_layers}_ign_layers={ign_layers}.png')
+    plt.savefig(f'experiments/{model.name}_UNDIR_train_loss_latent={latent_dim}_lr={lr}_epochs={epochs}_vb={variational_beta}_cap={capacity}_dec_layers={dec_layers}_enc_layers={enc_layers}_ign_layers={ign_layers}_edge_layers={edge_layers}.png')
     plt.clf()
 
     plt.plot(train_recon_loss, label='train_recon_loss')
     plt.plot(val_recon_loss, label='val_recon_loss')
     plt.legend()
-    plt.savefig(f'experiments/{model.name}_UNDIR_train_recon_loss_latent={latent_dim}_lr={lr}_epochs={epochs}_vb={variational_beta}_cap={capacity}_dec_layers={dec_layers}_ign_layers={ign_layers}.png')
+    plt.savefig(f'experiments/{model.name}_UNDIR_train_recon_loss_latent={latent_dim}_lr={lr}_epochs={epochs}_vb={variational_beta}_cap={capacity}_dec_layers={dec_layers}_enc_layers={enc_layers}_ign_layers={ign_layers}_edge_layers={edge_layers}.png')
     plt.clf()
 
     plt.plot(train_kl_loss, label='train_kl_loss')
     plt.plot(val_kl_loss, label='val_kl_loss')
     plt.legend()
-    plt.savefig(f'experiments/{model.name}_UNDIR_train_kl_loss_latent={latent_dim}_lr={lr}_epochs={epochs}_vb={variational_beta}_cap={capacity}_dec_layers={dec_layers}_ign_layers={ign_layers}.png')
+    plt.savefig(f'experiments/{model.name}_UNDIR_train_kl_loss_latent={latent_dim}_lr={lr}_epochs={epochs}_vb={variational_beta}_cap={capacity}_dec_layers={dec_layers}_enc_layers={enc_layers}_ign_layers={ign_layers}_edge_layers={edge_layers}.png')
     plt.clf()
 
     # --------------------
@@ -295,7 +298,7 @@ try:
     # --------------------
     torch.save(
         model.state_dict(),
-        f'networks/weights/{model.name}_UNDIR_latent={latent_dim}_lr={lr}_epochs={epochs}_vb={variational_beta}_cap={capacity}_dec_layers={dec_layers}_ign_layers={ign_layers}.pt'
+        f'networks/weights/{model.name}_UNDIR_latent={latent_dim}_lr={lr}_epochs={epochs}_vb={variational_beta}_cap={capacity}_dec_layers={dec_layers}_enc_layers={enc_layers}_ign_layers={ign_layers}_edge_layers={edge_layers}.pt'
     )
 
     # --------------------
@@ -303,13 +306,13 @@ try:
     # --------------------
     model.eval()
     metrics_train = evaluate_all(model, train_loader, dataset.template, device)
-    save_path = f"experiments/{model.name}_UNDIR_results_latent={latent_dim}_lr={lr}_epochs={epochs}_vb={variational_beta}_cap={capacity}_dec_layers={dec_layers}_ign_layers={ign_layers}_train.json"
+    save_path = f"experiments/{model.name}_UNDIR_results_latent={latent_dim}_lr={lr}_epochs={epochs}_vb={variational_beta}_cap={capacity}_dec_layers={dec_layers}_enc_layers={enc_layers}_ign_layers={ign_layers}_edge_layers={edge_layers}_train.json"
     with open(save_path, "w") as f:
         json.dump(metrics_train, f, indent=2)
     print(f"Saved metrics_train to {save_path}")
 
     metrics_val = evaluate_all(model, val_loader, dataset.template, device)
-    save_path = f"experiments/{model.name}_UNDIR_results_latent={latent_dim}_lr={lr}_epochs={epochs}_vb={variational_beta}_cap={capacity}_dec_layers={dec_layers}_ign_layers={ign_layers}_val.json"
+    save_path = f"experiments/{model.name}_UNDIR_results_latent={latent_dim}_lr={lr}_epochs={epochs}_vb={variational_beta}_cap={capacity}_dec_layers={dec_layers}_enc_layers={enc_layers}_ign_layers={ign_layers}_edge_layers={edge_layers}_val.json"
     with open(save_path, "w") as f:
         json.dump(metrics_val, f, indent=2)
     print(f"Saved metrics_val to {save_path}")
@@ -319,35 +322,35 @@ except KeyboardInterrupt:
     plt.plot(train_loss, label='train_loss')
     plt.plot(val_loss, label='val_loss')
     plt.legend()
-    plt.savefig(f'experiments/{model.name}_UNDIR_train_loss_latent={latent_dim}_lr={lr}_epochs={epochs}_vb={variational_beta}_cap={capacity}_dec_layers={dec_layers}_ign_layers={ign_layers}.png')
+    plt.savefig(f'experiments/{model.name}_UNDIR_train_loss_latent={latent_dim}_lr={lr}_epochs={epochs}_vb={variational_beta}_cap={capacity}_dec_layers={dec_layers}_enc_layers={enc_layers}_ign_layers={ign_layers}_edge_layers={edge_layers}.png')
     plt.clf()
 
     plt.plot(train_recon_loss, label='train_recon_loss')
     plt.plot(val_recon_loss, label='val_recon_loss')
     plt.legend()
-    plt.savefig(f'experiments/{model.name}_UNDIR_train_recon_loss_latent={latent_dim}_lr={lr}_epochs={epochs}_vb={variational_beta}_cap={capacity}_dec_layers={dec_layers}_ign_layers={ign_layers}.png')
+    plt.savefig(f'experiments/{model.name}_UNDIR_train_recon_loss_latent={latent_dim}_lr={lr}_epochs={epochs}_vb={variational_beta}_cap={capacity}_dec_layers={dec_layers}_enc_layers={enc_layers}_ign_layers={ign_layers}_edge_layers={edge_layers}.png')
     plt.clf()
 
     plt.plot(train_kl_loss, label='train_kl_loss')
     plt.plot(val_kl_loss, label='val_kl_loss')
     plt.legend()
-    plt.savefig(f'experiments/{model.name}_UNDIR_train_kl_loss_latent={latent_dim}_lr={lr}_epochs={epochs}_vb={variational_beta}_cap={capacity}_dec_layers={dec_layers}_ign_layers={ign_layers}.png')
+    plt.savefig(f'experiments/{model.name}_UNDIR_train_kl_loss_latent={latent_dim}_lr={lr}_epochs={epochs}_vb={variational_beta}_cap={capacity}_dec_layers={dec_layers}_enc_layers={enc_layers}_ign_layers={ign_layers}_edge_layers={edge_layers}.png')
     plt.clf()
 
     torch.save(
         model.state_dict(),
-        f'networks/weights/{model.name}_UNDIR_latent={latent_dim}_lr={lr}_epochs={epochs}_vb={variational_beta}_cap={capacity}_dec_layers={dec_layers}_ign_layers={ign_layers}.pt'
+        f'networks/weights/{model.name}_UNDIR_latent={latent_dim}_lr={lr}_epochs={epochs}_vb={variational_beta}_cap={capacity}_dec_layers={dec_layers}_enc_layers={enc_layers}_ign_layers={ign_layers}_edge_layers={edge_layers}.pt'
     )
 
     model.eval()
     metrics_train = evaluate_all(model, train_loader, dataset.template, device)
-    save_path = f"experiments/{model.name}_UNDIR_results_latent={latent_dim}_lr={lr}_epochs={epochs}_vb={variational_beta}_cap={capacity}_dec_layers={dec_layers}_ign_layers={ign_layers}_train.json"
+    save_path = f"experiments/{model.name}_UNDIR_results_latent={latent_dim}_lr={lr}_epochs={epochs}_vb={variational_beta}_cap={capacity}_dec_layers={dec_layers}_enc_layers={enc_layers}_ign_layers={ign_layers}_edge_layers={edge_layers}_train.json"
     with open(save_path, "w") as f:
         json.dump(metrics_train, f, indent=2)
     print(f"Saved metrics_train to {save_path}")
 
     metrics_val = evaluate_all(model, val_loader, dataset.template, device)
-    save_path = f"experiments/{model.name}_UNDIR_results_latent={latent_dim}_lr={lr}_epochs={epochs}_vb={variational_beta}_cap={capacity}_dec_layers={dec_layers}_ign_layers={ign_layers}_val.json"
+    save_path = f"experiments/{model.name}_UNDIR_results_latent={latent_dim}_lr={lr}_epochs={epochs}_vb={variational_beta}_cap={capacity}_dec_layers={dec_layers}_enc_layers={enc_layers}_ign_layers={ign_layers}_edge_layers={edge_layers}_val.json"
     with open(save_path, "w") as f:
         json.dump(metrics_val, f, indent=2)
     print(f"Saved metrics_val to {save_path}")
