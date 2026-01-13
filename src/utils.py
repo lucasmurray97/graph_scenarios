@@ -362,6 +362,9 @@ def build_graph_data_from_nx(
             raise ValueError(f"Node {u} missing slope attribute ('{slope_key}').")
         slope_vals.append(float(slope_attr))
 
+    present_slots = sorted(int(G.nodes[u][slot_key]) for u in G.nodes())
+    present_slots_t = torch.tensor(present_slots, dtype=torch.long, device=device)
+
     # tensors for node attrs (in active order)
     fuel_t  = torch.tensor(fuel_vals, dtype=torch.long,    device=device)
     alt_t   = torch.tensor(alt_vals,  dtype=torch.float32, device=device)
@@ -463,6 +466,7 @@ def build_graph_data_from_nx(
         y_edge_u=y_edge_u,              # [E_u] undirected labels  (NEW, preferred)
         y_edge_dir=y_edge_dir,          # [E_dir] directed labels  (compatibility)
         y_ign_idx=ignition,                # ignition slot index
+        original_ids=present_slots_t.clone()# [Na] local→canonical slots
     )
     return data
 
@@ -551,6 +555,8 @@ class GraphDatasetV3(Dataset):
     def __getitem__(self, idx: int):
         # load pickled NX DiGraph
         G = pickle.load(open(self.ids[idx], "rb"))
+        fname = os.path.basename(self.ids[idx])
+        graph_id = int(os.path.splitext(fname)[0].split("_")[1])
         ignition = []
         # attach per-node attributes
         # nodes assumed 1-based; map to 0-based slots
@@ -567,7 +573,7 @@ class GraphDatasetV3(Dataset):
                 ignition.append(slot)
                 
         # convert to PyG Data (produces y_edge_u for undirected supervision)
-        return build_graph_data_from_nx(
+        data = build_graph_data_from_nx(
             G=G,
             template=self.template,
             fuel_classes=self.fuel_classes,
@@ -578,6 +584,8 @@ class GraphDatasetV3(Dataset):
             slot_key=self.slot_key,
             y_ign_idx = ignition[0],
         )
+        data.original_graph = torch.tensor(float(graph_id))
+        return data
     
 def sigmoid(x):
     return 1 / (1 + torch.exp(-x)) if torch.is_tensor(x) else 1 / (1 + np.exp(-x))
@@ -679,18 +687,30 @@ def metrics_on_batch_tm(model, batch, template, device, edge_thr: float = 0.5):
     UNDIRECTED edge + ignition (top-1) metrics on the CURRENT batch.
 
     Expects:
-      - template.E_u
+      - template.E_u, template.undir_src, template.undir_dst
       - batch.y_edge_u: [B*E_u] or [E_u]
       - batch.y_ign_idx: [B]
-      - model(...) returns (logits_u[B,E_u], ign_logits[B,N]) or a dict with those.
+      - batch.original_ids: [#nodes_in_graph] local→canonical slot ids
+      - For GraphVAE-style models:
+          model(...) -> (logits_u[B,E_u], ign_logits[B,N])  OR dict with those.
+      - For VGAE baseline (model.name == "VGAE"):
+          we compute logits_u from node embeddings via inner products on U,
+          and ignition via model.ign_head if present.
     """
+    import torch
     model.eval()
     batch = batch.to(device)
     E_u = template.E_u
+    N   = template.Nmax
 
-    output, mu, logvar = model(batch.x, batch.edge_index_enc, batch.batch)
+    # ---------- Branch 1: native GraphVAE-style outputs ----------
+    output, mu, logvar = model(
+        batch.x,
+        getattr(batch, "edge_index_enc", batch.edge_index),
+        batch
+    )
 
-    # ---- extract logits ----
+    # extract logits
     if isinstance(output, (tuple, list)):
         assert len(output) >= 2, "Model must return (logits_u, ign_logits)."
         logits_u, ign_logits = output[0], output[1]
@@ -707,15 +727,18 @@ def metrics_on_batch_tm(model, batch, template, device, edge_thr: float = 0.5):
     if ign_logits.dim() == 1:
         ign_logits = ign_logits.unsqueeze(0)
 
+    # ---------- Common metric computation ----------
+    if logits_u.dim() == 1:
+        logits_u = logits_u.unsqueeze(0)
+
     B = logits_u.size(0)
     assert logits_u.size(1) == E_u, f"Expected logits_u [B,{E_u}], got {tuple(logits_u.shape)}"
 
     # labels
     y_edge_u = batch.y_edge_u.view(B, E_u).to(device).float()
     y_ign    = batch.y_ign_idx.view(B).to(device).long()
-
-    # ---- edges ----
-    p  = torch.sigmoid(logits_u)
+    # edges
+    p = torch.sigmoid(logits_u)
     yhat = (p >= edge_thr).float()
 
     total   = y_edge_u.numel()
@@ -733,9 +756,7 @@ def metrics_on_batch_tm(model, batch, template, device, edge_thr: float = 0.5):
     # ---- ignition (top-1 only) ----
     ign_pred = ign_logits.argmax(dim=1)     # [B]
     ign_acc  = (ign_pred == y_ign).float().mean().item()
-
     return {
-        # edges
         "edge/acc":  float(acc),
         "edge/prec": float(prec),
         "edge/rec":  float(rec),
@@ -743,6 +764,7 @@ def metrics_on_batch_tm(model, batch, template, device, edge_thr: float = 0.5):
         # ignition
         "ign/acc": float(ign_acc),
     }
+
 
 
 
@@ -938,6 +960,334 @@ def outputs_to_networkx(
     if (not return_list) and len(graphs) == 1:
         return graphs[0]
     return graphs
+
+@torch.no_grad()
+def gae_outputs_to_undirected_nx(
+    model,
+    batch,
+    template,
+    b: int = 0,                 # which graph in the batch
+    tau_edge: float = 0.5,
+    prune_isolates: bool = True,
+) -> nx.Graph:
+    """
+    Convert a GAE/VGAE output into an undirected NX graph over canonical slots.
+
+    Assumptions:
+      - template provides feasible undirected pairs via:
+            template.undir_src, template.undir_dst  (len = E_u)
+      - batch has:
+            batch.batch           (node → graph idx)
+            batch.original_ids    (local node idx → canonical slot id [0..Nmax-1])
+      - The GAE decoder takes (z, edge_index) and returns probs if sigmoid=True.
+    """
+    device = next(model.parameters()).device
+    batch = batch.to(device)
+
+    # Use encoder input edges (prefer edge_index_enc if present)
+    edge_index_enc = getattr(batch, "edge_index_enc", batch.edge_index)
+
+    # Node embeddings from the GAE encoder (per-node, not pooled)
+    if hasattr(model, "gae"):  # your wrapper with VGAE inside
+        z = model.gae.encode(batch.x, edge_index_enc)  # [num_nodes, d]
+        decoder = model.gae.decoder
+    else:
+        # Generic VGAE/GAE interface
+        z = model.encode(batch.x, edge_index_enc)      # [num_nodes, d]
+        decoder = model.decoder
+
+    # Select nodes belonging to graph b
+    node_mask = (batch.batch == b)
+    local_idx = node_mask.nonzero(as_tuple=False).view(-1)        # local node indices for graph b
+    if local_idx.numel() == 0:
+        return nx.Graph()
+
+    # Map local nodes -> canonical slots
+    # (assumes `original_ids` exists and holds slot ids [0..Nmax-1])
+    if not hasattr(batch, "original_ids"):
+        raise ValueError("batch.original_ids is required to map to canonical slots.")
+    slots_present = batch.original_ids[local_idx].long()          # [n_present]
+
+    # Build a lookup: slot -> local index (within the full batch tensor)
+    slot_to_local = {int(s.item()): int(i.item()) for s, i in zip(slots_present, local_idx)}
+
+    # Keep only feasible undirected pairs whose BOTH endpoints are present
+    s_all = template.undir_src
+    t_all = template.undir_dst
+    if torch.is_tensor(s_all):
+        s_all = s_all.tolist()
+        t_all = t_all.tolist()
+
+    kept_loc_src, kept_loc_dst = [], []
+    kept_slots_src, kept_slots_dst = [], []
+    for s_slot, t_slot in zip(s_all, t_all):
+        if (s_slot in slot_to_local) and (t_slot in slot_to_local):
+            kept_slots_src.append(s_slot)
+            kept_slots_dst.append(t_slot)
+            kept_loc_src.append(slot_to_local[s_slot])
+            kept_loc_dst.append(slot_to_local[t_slot])
+
+    if len(kept_loc_src) == 0:
+        # No feasible candidate edges among present nodes
+        G = nx.Graph()
+        # still add present nodes
+        G.add_nodes_from(int(s.item()) for s in slots_present)
+        if prune_isolates:
+            # (no edges anyway)
+            pass
+        return G
+
+    # Score those feasible pairs with the decoder (use sigmoid=True for probs)
+    edge_index_local = torch.tensor([kept_loc_src, kept_loc_dst], dtype=torch.long, device=device)
+    # For inner-product decoders this is symmetric; we only need one direction
+    probs = decoder(z, edge_index_local, sigmoid=True)  # [E_keep]
+
+    # Build undirected graph over canonical slots
+    G = nx.Graph()
+    # Add nodes (canonical slots)
+    G.add_nodes_from(int(s.item()) for s in slots_present)
+
+    # Optional: attach row/col for convenience
+    H, W = template.H, template.W
+    for n in list(G.nodes):
+        G.nodes[n]["row"] = n // W
+        G.nodes[n]["col"] = n % W
+
+    # Threshold and add edges (undirected)
+    probs_cpu = probs.detach().cpu().tolist()
+    for (s_slot, t_slot, p) in zip(kept_slots_src, kept_slots_dst, probs_cpu):
+        if p >= tau_edge:
+            G.add_edge(int(s_slot), int(t_slot), p=float(p))
+
+    # Optionally prune isolates
+    if prune_isolates:
+        G.remove_nodes_from(list(nx.isolates(G)))
+
+    return G
+
+
+@torch.no_grad()
+def outputs_to_networkx_mst(
+    model,
+    output=None,         # tuple: (edge_u_logits [B,E_u], ign_logits [B,N])
+    z=None,              # optional latent [B,z] or [z]
+    tau_edge: float = 0.0,
+    return_list: bool = False,
+):
+    """
+    Reconstruct NX DiGraph(s) from the model by:
+      1) Converting undirected edge logits to probabilities.
+      2) Building an undirected weighted graph on the grid neighbors.
+      3) Computing the Maximum Spanning Tree (MST).
+      4) Picking the component containing the (predicted) ignition node.
+      5) Orienting the tree using BFS from ignition (edges point outward).
+
+    Node attrs: slot, row, col, pos_norm, ign_prob, is_ign
+    Edge attrs: weight (edge probability used for MST)
+
+    Args
+    ----
+    model: GRAPH_VAE_V3 (has template with undir_src/undir_dst, pos_all, H/W/N)
+    output: optional decoded outputs (edge_u_logits, ign_logits)
+    z: optional latent for decoding if output=None
+    tau_edge: optional threshold (keep only undirected edges with prob >= tau_edge) before MST
+    return_list: if False and batch size == 1, returns a single DiGraph
+
+    Returns
+    -------
+    nx.DiGraph or List[nx.DiGraph]
+    """
+    assert (output is not None) or (z is not None), "Provide either `output` or `z`."
+    device    = next(model.parameters()).device
+    template  = model.template
+    H, W, N   = template.H, template.W, template.Nmax
+    pos_all   = getattr(model, "pos_all", template.pos_all).to(device)  # [N,2]
+
+    # Decode if needed
+    if output is None:
+        if z.dim() == 1:
+            z = z.unsqueeze(0)
+        output = model.decode(z.to(device))
+
+    # Unpack new-style outputs
+    if isinstance(output, (tuple, list)):
+        edge_u_logits, ign_logits = output          # [B,E_u], [B,N]
+    elif isinstance(output, dict):
+        edge_u_logits = output["edge_u_logits"]
+        ign_logits    = output["ign_logits"]
+    else:
+        raise ValueError("Unexpected output type; expected (edge_u_logits, ign_logits).")
+
+    if edge_u_logits.dim() == 1:
+        edge_u_logits = edge_u_logits.unsqueeze(0)  # [1,E_u]
+    if ign_logits.dim() == 1:
+        ign_logits = ign_logits.unsqueeze(0)        # [1,N]
+
+    B   = edge_u_logits.size(0)
+    E_u = model.E_u
+
+    # Canonical neighbor pairs (undirected)
+    s_idx = model.undir_src.to(device)   # [E_u]
+    t_idx = model.undir_dst.to(device)   # [E_u]
+
+    graphs = []
+    for b in range(B):
+        # --- probabilities for undirected edges ---
+        p_u = torch.sigmoid(edge_u_logits[b])      # [E_u]
+        if tau_edge > 0.0:
+            keep = (p_u >= tau_edge)
+            s_b = s_idx[keep]
+            t_b = t_idx[keep]
+            w_b = p_u[keep]
+        else:
+            s_b = s_idx
+            t_b = t_idx
+            w_b = p_u
+
+        # --- pick ignition (predicted) and its probability ---
+        ign_probs = F.softmax(ign_logits[b], dim=-1)    # [N]
+        ign_idx   = int(torch.argmax(ign_probs).item())
+        ign_p     = float(ign_probs[ign_idx].item())
+
+        # --- build undirected weighted graph over grid neighbors ---
+        G_u = nx.Graph()
+        # add all nodes (so ign exists even if no edges survive)
+        G_u.add_nodes_from(range(N))
+        # add weighted edges
+        for u, v, w in zip(s_b.tolist(), t_b.tolist(), w_b.tolist()):
+            if u != v:
+                G_u.add_edge(u, v, weight=float(w))
+
+        # --- MST / forest (if graph disconnected) ---
+        if G_u.number_of_edges() > 0:
+            T = nx.maximum_spanning_tree(G_u, weight="weight")
+        else:
+            T = nx.Graph()
+            T.add_nodes_from(G_u.nodes())
+
+        # --- restrict to the component containing ignition ---
+        if ign_idx in T:
+            comp_nodes = nx.node_connected_component(T, ign_idx) if T.number_of_nodes() > 0 else {ign_idx}
+            T_src = T.subgraph(comp_nodes).copy()
+        else:
+            # degenerate: no edges + maybe node missing -> just the ignition node
+            T_src = nx.Graph()
+            T_src.add_node(ign_idx)
+
+        # --- orient the tree from ignition (outward) ---
+        T_dir = nx.bfs_tree(T_src, source=ign_idx)  # DiGraph orientation
+
+        # --- attach node attributes ---
+        rows = torch.arange(N, device=device) // W
+        cols = torch.arange(N, device=device) %  W
+
+        DG = nx.DiGraph()
+        for n in T_dir.nodes():
+            DG.add_node(
+                int(n),
+                slot=int(n),
+                row=int(rows[n].item()),
+                col=int(cols[n].item()),
+                pos_norm=(float(pos_all[n, 0].item()), float(pos_all[n, 1].item())),
+                is_ign=(n == ign_idx),
+                ign_prob=(ign_p if n == ign_idx else 0.0),
+            )
+
+        # --- copy directed edges with probabilities from MST weights ---
+        for u, v in T_dir.edges():
+            # edge prob = MST weight stored on the underlying undirected edge
+            w = float(T_src[u][v]["weight"]) if T_src.has_edge(u, v) else 0.0
+            DG.add_edge(int(u), int(v), weight=w)
+
+        graphs.append(DG)
+
+    if (not return_list) and len(graphs) == 1:
+        return graphs[0]
+    return graphs
+
+@torch.no_grad()
+def _gt_tree_from_batch(batch, template, b: int) -> nx.DiGraph:
+    """Ground-truth directed tree from undirected labels + ignition."""
+    E_u = template.E_u
+    N   = template.Nmax
+
+    # Undirected labels for this item
+    y_edge_u = batch.y_edge_u.view(batch.num_graphs, E_u)[b].to(torch.long)  # [E_u]
+    keep = (y_edge_u == 1).nonzero(as_tuple=False).view(-1).to("cpu")
+
+    # Ignition index for this item
+    ign = batch.y_ign_idx.view(batch.num_graphs)[b].item()
+
+    # Build undirected GT graph
+    G_u = nx.Graph()
+    G_u.add_nodes_from(range(N))
+    if keep.numel() > 0:
+        s = template.undir_src[keep].tolist()
+        t = template.undir_dst[keep].tolist()
+        G_u.add_edges_from((int(u), int(v)) for u, v in zip(s, t) if u != v)
+
+    # Restrict to component containing ignition
+    if ign in G_u and G_u.number_of_nodes() > 0 and G_u.degree(ign) > 0:
+        comp_nodes = nx.node_connected_component(G_u, ign)
+        G_u = G_u.subgraph(comp_nodes).copy()
+    else:
+        # degenerate: only ignition node
+        G_u = G_u.subgraph([ign]).copy()
+
+    # Orient via BFS from ignition → DiGraph
+    return nx.bfs_tree(G_u, source=ign)
+
+@torch.no_grad()
+def _pred_tree_from_logits(edge_logits_u, ign_logits, template, tau_edge: float) -> nx.DiGraph:
+    """
+    Predicted directed tree:
+      1) probs = sigmoid(edge_logits_u)
+      2) build undirected graph with edges where p >= τ_edge (weight=p)
+      3) take component containing ignition (argmax ign logits)
+      4) maximum spanning tree (MST)
+      5) orient via BFS from ignition
+    """
+    E_u = template.E_u
+    N   = template.Nmax
+
+    # 1) probabilities
+    if isinstance(edge_logits_u, torch.Tensor):
+        p = torch.sigmoid(edge_logits_u).cpu()
+    else:
+        p = torch.tensor(edge_logits_u).sigmoid()
+
+    # ignition (use logits argmax; softmax argmax is same)
+    ign = int(torch.argmax(ign_logits).item())
+
+    # 2) build undirected graph with threshold
+    G_u = nx.Graph()
+    G_u.add_nodes_from(range(N))
+    s = template.undir_src
+    t = template.undir_dst
+    keep = (p >= tau_edge).nonzero(as_tuple=False).view(-1)
+    if keep.numel() > 0:
+        ss = s[keep].tolist()
+        tt = t[keep].tolist()
+        ww = p[keep].tolist()
+        for u, v, w in zip(ss, tt, ww):
+            if u != v:
+                G_u.add_edge(int(u), int(v), weight=float(w))
+
+    # 3) restrict to component containing ignition
+    if ign in G_u and G_u.number_of_nodes() > 0 and G_u.degree(ign) > 0:
+        comp_nodes = nx.node_connected_component(G_u, ign)
+        G_u = G_u.subgraph(comp_nodes).copy()
+    else:
+        # Only ignition available → trivial tree with a single node (no edges)
+        G_trivial = nx.DiGraph()
+        G_trivial.add_node(ign)
+        return G_trivial, ign
+
+    # 4) maximum spanning tree on that component
+    T_u = nx.maximum_spanning_tree(G_u, weight="weight")
+
+    # 5) orient via BFS from ignition
+    return nx.bfs_tree(T_u, source=ign), ign
 
 
 

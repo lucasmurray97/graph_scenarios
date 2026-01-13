@@ -142,7 +142,7 @@ class GRAPH_VAE_V3(nn.Module):
             x = norm(x)
             x = F.relu(x, inplace=True)
             x = F.dropout(x, p=self.p_drop, training=self.training)
-        return global_mean_pool(x, batch)  # graph-level embedding
+        return global_mean_pool(x, batch.batch)  # graph-level embedding
     
     def broadcast_latent(self, z: torch.Tensor) -> torch.Tensor:
         if z.dim() == 1:

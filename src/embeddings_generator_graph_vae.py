@@ -15,14 +15,14 @@ from tqdm import tqdm
 ROOT = "/home/lucas/graph_scenarios/data/sub20/graphs"
 WEIGHTS = "networks/weights/GRAPH_VAE_V3_UNDIR_latent=128_lr=0.0005_epochs=2000_variational_beta=0.05_capacity=256_dec_layers=4_enc_layers=3_ign_layers=2_edge_layers=4_best.pt"
 OUT_DIR = "embeddings"
-BATCH_SIZE = 32
+BATCH_SIZE = 256
 LATENT_DIM = 128
-DEVICE = torch.device("cpu")
+DEVICE = torch.device("cuda")
 
 # must match what you trained with (only the needed bits)
 params = {
-    'distribution_std': 1.0,
-    'variational_beta': 0.01,
+    'distribution_std': 0.1,
+    'variational_beta': 0.05,
     'capacity': 256,
     'dec_layers': 4,
     'edge_layers': 4,
@@ -35,7 +35,7 @@ params = {
 
 # ---------- data / model ----------
 dataset = GraphDatasetV3(root=ROOT)
-loader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers = 2)
+loader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers = 6)
 
 # input_dim = 5 for (pos2 + alt + slope + fuel_scalar) in your V3 setup
 model = GRAPH_VAE_V3(input_dim=5, latent_dim=LATENT_DIM, params=params, template=dataset.template).to(DEVICE)
@@ -56,7 +56,7 @@ with torch.inference_mode():
     for batch in loader:
         batch = batch.to(DEVICE, non_blocking=True)
         # forward: returns (output, mu, logvar)
-        _, mu, log = model(batch.x, batch.edge_index_enc, batch.batch)   # mu/log: [B, z]
+        _, mu, log = model(batch.x, batch.edge_index_enc, batch)   # mu/log: [B, z]
         mu_cpu  = mu.detach().cpu().numpy()
         log_cpu = log.detach().cpu().numpy()
 

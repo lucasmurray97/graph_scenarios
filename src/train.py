@@ -12,7 +12,8 @@ from utils import (
 )
 from networks.graph_vae import GRAPH_VAE
 from networks.graph_vae_v2 import GRAPH_VAE_V2
-from networks.graph_vae_v3 import GRAPH_VAE_V3  # <- your UNDIRECTED V3
+from networks.graph_vae_v3 import GRAPH_VAE_V3 
+from networks.gae import GAE
 from torch_geometric.loader import DataLoader
 import torch.optim as optim
 from torch.utils.data import random_split
@@ -91,6 +92,7 @@ models = {
     "v1": GRAPH_VAE,
     "v2": GRAPH_VAE_V2,
     "v3": GRAPH_VAE_V3,  # UNDIRECTED variant
+    "gae": GAE,
 }
 
 # --------------------
@@ -160,7 +162,7 @@ try:
             optimizer.zero_grad(set_to_none=True)
             batch = batch.to(device, non_blocking=True)
 
-            output, mu, log = model(batch.x, batch.edge_index_enc, batch.batch)
+            output, mu, log = model(batch.x, batch.edge_index_enc, batch)
             
             recon_loss, kl_loss, loss, loss_dict = model.loss(output, batch, mu, log, dataset.template)
 
@@ -179,7 +181,7 @@ try:
                     train_epoch_ign_loss  += float(loss_dict["ign"].item())
 
             # quick on-batch metrics (edges only)
-            with torch.no_grad():
+            # with torch.no_grad():
                 mb_metrics = metrics_on_batch_tm(model, batch, dataset.template, device, edge_thr=0.5)
 
             # --- log to TB ---
@@ -218,7 +220,7 @@ try:
         with torch.no_grad():
             for i, batch in enumerate(val_loader):
                 batch = batch.to(device, non_blocking=True)
-                output, mu, log = model(batch.x, batch.edge_index_enc, batch.batch)
+                output, mu, log = model(batch.x, batch.edge_index_enc, batch)
 
                 recon_loss, kl_loss, loss, loss_dict = model.loss(output, batch, mu, log, dataset.template)
 
