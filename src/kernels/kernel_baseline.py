@@ -65,7 +65,6 @@ def load_nx_dag(path: str) -> nx.DiGraph:
     if not nx.is_directed_acyclic_graph(G):
         raise ValueError(f"{path}: graph is not a DAG")
 
-    # Handle empty graphs consistently (avoid all-zero feature vectors)
     if G.number_of_nodes() == 0:
         G = nx.DiGraph()
         G.add_node(0)
