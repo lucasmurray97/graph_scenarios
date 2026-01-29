@@ -545,7 +545,7 @@ def main() -> None:
     ap = argparse.ArgumentParser(description="Directed WL feature hashing + k-medoids scenario selection")
     ap.add_argument("--graphs_dir", type=str, default="data/sub20/graphs", help="Directory containing graph pickle files")
     ap.add_argument("--pattern", type=str, default="graph_*.pickle", help="Glob pattern inside graphs_dir")
-    ap.add_argument("--out_dir", type=str, default="src/kernels/outputs_final", help="Output directory")
+    ap.add_argument("--out_dir", type=str, default="src/kernels/outputs", help="Output directory")
 
     ap.add_argument("--k_values", type=int, nargs="+", default=[20, 100], help="K values (e.g., 20 100)")
     ap.add_argument("--wl_iterations", type=int, default=3, help="WL iterations h")
@@ -627,8 +627,8 @@ def main() -> None:
         E = 1.0 - S                                       # (N, k)  "distance-like"
 
         # save matrices X,S,E
-        # np.save(out_dir / f"embed_k{k}_features.npy", Xn.toarray())
-        # np.save(out_dir / f"embed_k{k}_similarities.npy", S)
+        np.save(out_dir / f"embed_k{k}_features.npy", Xn.toarray())
+        np.save(out_dir / f"embed_k{k}_similarities.npy", S)
 
         np.save(out_dir / f"embed_k{k}_distances.npy", E)
         
