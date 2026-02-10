@@ -2,17 +2,13 @@
 """
 Directed WL (Weisfeiler–Lehman) feature-hashing + k-medoids baseline for scenario selection.
 
-- Computes WL label-count features for each directed acyclic graph (DAG).
-- Hashes label counts into a fixed-dimensional sparse vector (feature hashing).
-- L2-normalizes features and clusters with k-medoids using cosine distance.
-- For large N, uses a CLARA-style approximation plus a lightweight full-data refinement step.
+Computes WL label-count features for each DAG using feature hashing and L2 normalization, then selects k representative
+graphs via k-medoids clustering with cosine distance.
+For large N, uses a CLARA-style approximation plus a lightweight full-data refinement step.
 
-Outputs (per k):
-  outputs/selected_graphs_k{k}.json
 """
 
 from __future__ import annotations
-
 import argparse
 import glob
 import hashlib
@@ -22,8 +18,6 @@ import pickle
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
-
-
 import networkx as nx
 import numpy as np
 from scipy import sparse
@@ -32,13 +26,7 @@ import matplotlib.pyplot as plt
 from sklearn.decomposition import PCA
 from sklearn.manifold import TSNE 
 from sklearn.preprocessing import normalize
-
 from umap import UMAP
-
-
-
-
-EPS = 1e-12
 
 
 # -----------------------------
@@ -106,42 +94,119 @@ def save_json(out_path: str | Path, payload: dict) -> None:
 
 
 # -----------------------------
+# Edge-weight discretization
+# -----------------------------
+def discretize_weight(w: float, boundaries: Sequence[float]) -> int:
+    """Assign a continuous weight to a discrete bin index using pre-computed boundaries."""
+    for i, b in enumerate(boundaries):
+        if w <= b:
+            return i
+    return len(boundaries)
+
+
+def compute_weight_boundaries(G: nx.DiGraph, n_bins: int = 5, weight_attr: str = "weight") -> List[float]:
+    """Compute quantile-based bin boundaries from all edge weights in a graph."""
+    weights = [float(d.get(weight_attr, 0)) for _, _, d in G.edges(data=True)]
+    if not weights:
+        return []
+    quantiles = np.linspace(0, 100, n_bins + 1)[1:-1]  # exclude 0% and 100%
+    return list(np.percentile(weights, quantiles))
+
+
+# -----------------------------
 # WL feature hashing
 # -----------------------------
-def initial_labels(G: nx.DiGraph, node_label_attr: Optional[str]) -> Dict[object, str]:
+def initial_labels(
+    G: nx.DiGraph,
+    node_label_attr: Optional[str],
+    use_edge_weights: bool = False,
+    weight_attr: str = "weight",
+    weight_bins: int = 5,
+) -> Dict[object, str]:
     """
-    Initial node labels:
-      - If node_label_attr is provided and present on node, use it.
-      - Else use simple structural label in{deg}_out{deg}.
+    Initial node labels incorporating structural degree AND edge-weight information.
+
+    When use_edge_weights=True, each node's label encodes:
+      - in-degree and out-degree (topology)
+      - discretized mean incoming edge weight (fire arrival speed)
+      - discretized mean outgoing edge weight (fire spread speed)
+
+    This makes the kernel sensitive to *how fast* fire arrives at and departs from each cell,
+    not just the connectivity pattern.
     """
     labels: Dict[object, str] = {}
+
+    if use_edge_weights:
+        boundaries = compute_weight_boundaries(G, n_bins=weight_bins, weight_attr=weight_attr)
+
     for v in G.nodes():
         if node_label_attr is not None and node_label_attr in G.nodes[v]:
             labels[v] = str(G.nodes[v][node_label_attr])
         else:
-            labels[v] = f"in{G.in_degree(v)}_out{G.out_degree(v)}"
+            in_deg = G.in_degree(v)
+            out_deg = G.out_degree(v)
+
+            if use_edge_weights and boundaries:
+                # Mean incoming weight (how fast fire reaches this cell)
+                in_weights = [float(G.edges[u, v].get(weight_attr, 0)) for u in G.predecessors(v)]
+                in_wbin = discretize_weight(np.mean(in_weights), boundaries) if in_weights else 0
+
+                # Mean outgoing weight (how fast fire leaves this cell)
+                out_weights = [float(G.edges[v, u].get(weight_attr, 0)) for u in G.successors(v)]
+                out_wbin = discretize_weight(np.mean(out_weights), boundaries) if out_weights else 0
+
+                labels[v] = f"in{in_deg}_out{out_deg}_wi{in_wbin}_wo{out_wbin}"
+            else:
+                labels[v] = f"in{in_deg}_out{out_deg}"
+
     return labels
 
 
 class DirectedWLKernelHasher:
     """
-    Directed WL subtree feature hashing.
+    Attributed Directed WL subtree feature hashing.
 
     Produces a sparse feature matrix X (N x hash_dim) where features are hashed counts of
     node labels across WL iterations t=0..h.
+
+    When use_edge_weights=True, the kernel incorporates discretized edge weights (fire spread
+    times) into both the initial node labels and the WL refinement signatures. This makes the
+    kernel sensitive to fire propagation dynamics, not just graph topology.
 
     Similarity is computed as cosine similarity between row vectors:
       K = Xn * Xn^T where Xn is row-normalized (L2).
     """
 
-    def __init__(self, h: int = 3, hash_dim: int = 2**18, node_label_attr: Optional[str] = None):
+    def __init__(
+        self,
+        h: int = 3,
+        hash_dim: int = 2**18,
+        node_label_attr: Optional[str] = None,
+        use_edge_weights: bool = False,
+        weight_attr: str = "weight",
+        weight_bins: int = 5,
+    ):
         self.h = int(h)
         self.hash_dim = int(hash_dim)
         self.node_label_attr = node_label_attr
+        self.use_edge_weights = use_edge_weights
+        self.weight_attr = weight_attr
+        self.weight_bins = weight_bins
 
     def _wl_features_one_graph(self, G: nx.DiGraph) -> Dict[int, float]:
-        labels = initial_labels(G, self.node_label_attr)
+        labels = initial_labels(
+            G,
+            self.node_label_attr,
+            use_edge_weights=self.use_edge_weights,
+            weight_attr=self.weight_attr,
+            weight_bins=self.weight_bins,
+        )
         feat_counts: Dict[int, float] = {}
+
+        # Per-graph weight boundaries (used for edge annotations in refinement)
+        boundaries: List[float] = []
+        if self.use_edge_weights:
+            boundaries = compute_weight_boundaries(G, n_bins=self.weight_bins, weight_attr=self.weight_attr)
 
         # Iteration 0 label counts
         for lab in labels.values():
@@ -152,8 +217,22 @@ class DirectedWLKernelHasher:
         for t in range(1, self.h + 1):
             new_labels: Dict[object, str] = {}
             for v in G.nodes():
-                in_labs = sorted((labels[u] for u in G.predecessors(v)), key=str)
-                out_labs = sorted((labels[u] for u in G.successors(v)), key=str)
+                if self.use_edge_weights and boundaries:
+                    # Weight-annotated neighbor labels: "label:wbin"
+                    in_labs = sorted(
+                        (f"{labels[u]}:{discretize_weight(float(G.edges[u, v].get(self.weight_attr, 0)), boundaries)}"
+                         for u in G.predecessors(v)),
+                        key=str,
+                    )
+                    out_labs = sorted(
+                        (f"{labels[u]}:{discretize_weight(float(G.edges[v, u].get(self.weight_attr, 0)), boundaries)}"
+                         for u in G.successors(v)),
+                        key=str,
+                    )
+                else:
+                    in_labs = sorted((labels[u] for u in G.predecessors(v)), key=str)
+                    out_labs = sorted((labels[u] for u in G.successors(v)), key=str)
+
                 sig = f"{labels[v]}|IN:{','.join(in_labs)}|OUT:{','.join(out_labs)}"
                 new_lab = stable_md5(sig)
                 new_labels[v] = new_lab
@@ -165,40 +244,40 @@ class DirectedWLKernelHasher:
 
         return feat_counts
 
-    def transform_files(self, graph_files: Sequence[str]) -> sparse.csr_matrix:
+    def transform_files(self, graph_files: Sequence[str], chunk_size: int = 5000) -> sparse.csr_matrix:
         """
-        Streaming transform: loads each graph, computes features, and discards the graph.
-        Avoids holding all graphs in memory.
+        Chunked streaming transform: processes graphs in chunks to limit memory.
+        Each chunk builds a partial sparse matrix; chunks are vstack-ed at the end.
         """
-        rows: List[int] = []
-        cols: List[int] = []
-        data: List[float] = []
+        n_files = len(graph_files)
+        chunks: List[sparse.csr_matrix] = []
 
-        for i, p in enumerate(tqdm(graph_files, desc="WL features (directed)")):
-            G = load_nx_dag(p)
-            fd = self._wl_features_one_graph(G)
-            for c, v in fd.items():
-                rows.append(i)
-                cols.append(int(c))
-                data.append(float(v))
+        for start in range(0, n_files, chunk_size):
+            end = min(start + chunk_size, n_files)
+            batch = graph_files[start:end]
+            rows: List[int] = []
+            cols: List[int] = []
+            data: List[float] = []
 
-        X = sparse.csr_matrix(
-            (data, (rows, cols)),
-            shape=(len(graph_files), self.hash_dim),
-            dtype=np.float64,
-        )
+            for i, p in enumerate(tqdm(batch, desc=f"WL features [{start}-{end}]/{n_files}")):
+                G = load_nx_dag(p)
+                fd = self._wl_features_one_graph(G)
+                for c, v in fd.items():
+                    rows.append(i)
+                    cols.append(int(c))
+                    data.append(float(v))
+
+            chunk = sparse.csr_matrix(
+                (data, (rows, cols)),
+                shape=(len(batch), self.hash_dim),
+                dtype=np.float32,
+            )
+            chunks.append(chunk)
+            del rows, cols, data
+
+        X = sparse.vstack(chunks, format="csr")
+        del chunks
         return X
-
-
-def row_l2_norms(X: sparse.csr_matrix) -> np.ndarray:
-    return np.sqrt(X.multiply(X).sum(axis=1)).A1
-
-
-def row_normalize(X: sparse.csr_matrix, norms: np.ndarray) -> sparse.csr_matrix:
-    norms = norms.astype(np.float64, copy=False)
-    inv = np.zeros_like(norms, dtype=np.float64)
-    inv[norms > EPS] = 1.0 / norms[norms > EPS]
-    return sparse.diags(inv, format="csr") @ X
 
 
 # -----------------------------
@@ -551,6 +630,12 @@ def main() -> None:
     ap.add_argument("--wl_iterations", type=int, default=3, help="WL iterations h")
     ap.add_argument("--hash_dim", type=int, default=2**18, help="Feature hashing dimension")
     ap.add_argument("--node_label_attr", type=str, default=None, help="Optional node attribute for initial labels")
+    ap.add_argument("--use_edge_weights", action="store_true", default=True,
+                    help="Incorporate edge weights into WL labels (default: True)")
+    ap.add_argument("--no_edge_weights", dest="use_edge_weights", action="store_false",
+                    help="Disable edge-weight attribution (topology-only WL)")
+    ap.add_argument("--weight_attr", type=str, default="weight", help="Edge attribute for weights")
+    ap.add_argument("--weight_bins", type=int, default=5, help="Number of quantile bins for weight discretization")
 
     ap.add_argument("--seed", type=int, default=42, help="Random seed")
     ap.add_argument("--max_full_n", type=int, default=1200, help="If N <= this, compute full NxN; else CLARA")
@@ -562,14 +647,14 @@ def main() -> None:
     ap.add_argument("--polish_rounds", type=int, default=3, help="Full-data polishing rounds (CLARA only)")
     ap.add_argument("--polish_candidates", type=int, default=80, help="Candidates per cluster in polishing")
     ap.add_argument("--limit", type=int, default=None, help="Optional limit for quick tests")
+    ap.add_argument("--no_plots", action="store_true", help="Skip PCA/UMAP/t-SNE plots (faster for large N)")
     args = ap.parse_args()
 
     rng = np.random.default_rng(int(args.seed))
 
     graphs_dir = Path(args.graphs_dir)
     out_dir = Path(args.out_dir)
-  
-    
+    out_dir.mkdir(parents=True, exist_ok=True)
 
     files = discover_files(str(graphs_dir), args.pattern)
     if args.limit is not None:
@@ -584,11 +669,15 @@ def main() -> None:
         h=int(args.wl_iterations),
         hash_dim=int(args.hash_dim),
         node_label_attr=args.node_label_attr,
+        use_edge_weights=args.use_edge_weights,
+        weight_attr=args.weight_attr,
+        weight_bins=int(args.weight_bins),
     )
+    print(f"[info] Edge-weight attribution: {'ENABLED (bins={})'.format(args.weight_bins) if args.use_edge_weights else 'DISABLED'}")
     X = hasher.transform_files(files)
 
-    norms = row_l2_norms(X)
-    Xn = row_normalize(X, norms)
+    # sklearn handles zero rows by leaving them as all zeros (no epsilon needed).
+    Xn = normalize(X, norm="l2", axis=1, copy=False)
     N = int(Xn.shape[0])
     print(f"[info] Feature matrix: {X.shape} nnz={X.nnz}")
     print(f"[info] N={N} | mode={'FULL' if N <= int(args.max_full_n) else 'CLARA'}")
@@ -616,88 +705,46 @@ def main() -> None:
                 polish_rounds=int(args.polish_rounds),
                 polish_candidates=int(args.polish_candidates),
             )
-        # ---------- Embedding plots (PCA / UMAP / t-SNE) ----------
+        # ---------- Optional Embedding plots (PCA / UMAP / t-SNE) ----------
+        if not args.no_plots:
+            labels = np.array(res.cluster_labels, dtype=int)
+            medoids = np.array(res.medoid_indices, dtype=int)
 
+            S = cosine_similarity_to_medoids(Xn, medoids)
+            E = 1.0 - S
 
-        labels = np.array(res.cluster_labels, dtype=int)
-        medoids = np.array(res.medoid_indices, dtype=int)
+            np.save(out_dir / f"embed_k{k}_distances.npy", E)
 
-        # Build N×k embedding: distance-to-medoids (cheap and works great for large N)
-        S = cosine_similarity_to_medoids(Xn, medoids)      # (N, k)
-        E = 1.0 - S                                       # (N, k)  "distance-like"
+            Zp = PCA(n_components=2, random_state=int(args.seed)).fit_transform(E)
+            plt.figure(figsize=(12, 9))
+            plt.scatter(Zp[:, 0], Zp[:, 1], s=6, c=labels, cmap="tab20", alpha=0.55)
+            plt.scatter(Zp[medoids, 0], Zp[medoids, 1], s=120, c="black", marker="x")
+            plt.title(f"PCA of (1 - cosine similarity to medoids), k={k}")
+            plt.tight_layout()
+            plt.savefig(out_dir / f"embed_k{k}_pca.png", dpi=220)
+            plt.close()
 
-        # save matrices X,S,E
-        np.save(out_dir / f"embed_k{k}_features.npy", Xn.toarray())
-        np.save(out_dir / f"embed_k{k}_similarities.npy", S)
-
-        np.save(out_dir / f"embed_k{k}_distances.npy", E)
-        
-
-        # ---- PCA (all points) ----
-        Zp = PCA(n_components=2, random_state=int(args.seed)).fit_transform(E)
-        plt.figure(figsize=(12, 9))
-        plt.scatter(Zp[:, 0], Zp[:, 1], s=6, c=labels, cmap="tab20", alpha=0.55)
-        plt.scatter(Zp[medoids, 0], Zp[medoids, 1], s=120, c="black", marker="x")
-        plt.title(f"PCA of (1 - cosine similarity to medoids), k={k}")
-        plt.tight_layout()
-        plt.savefig(out_dir / f"embed_k{k}_pca.png", dpi=220)
-        plt.close()
-
-        # ---- UMAP (all points) ----
-        Zu = UMAP(
-            n_components=2,
-            n_neighbors=30,
-            min_dist=0.10,
-            metric="euclidean",           # because E is already a distance-like feature space
-            random_state=int(args.seed),
-        ).fit_transform(E)
-
-        plt.figure(figsize=(12, 9))
-        plt.scatter(Zu[:, 0], Zu[:, 1], s=6, c=labels, cmap="tab20", alpha=0.55)
-        plt.scatter(Zu[medoids, 0], Zu[medoids, 1], s=120, c="black", marker="x")
-        plt.title(f"UMAP of (1 - cosine similarity to medoids), k={k}")
-        plt.tight_layout()
-        plt.savefig(out_dir / f"embed_k{k}_umap.png", dpi=220)
-        plt.close()
-
-        # ---- t-SNE (SUBSAMPLE only; t-SNE is expensive) ----
-        n_plot = min(N, 8000)
-        idx = rng.choice(np.arange(N), size=n_plot, replace=False)
-        Et = E[idx]
-
-        Zt = TSNE(
-            n_components=2,
-            init="pca",
-            learning_rate="auto",
-            perplexity=30,
-            random_state=int(args.seed),
-        ).fit_transform(Et)
-
-        plt.figure(figsize=(12, 9))
-        plt.scatter(Zt[:, 0], Zt[:, 1], s=7, c=labels[idx], cmap="tab20", alpha=0.65)
-
-        # mark medoids if they appear in the subsample
-        pos = {int(i): j for j, i in enumerate(idx.tolist())}
-        mid_in = [pos[int(m)] for m in medoids.tolist() if int(m) in pos]
-        if len(mid_in) > 0:
-            plt.scatter(Zt[mid_in, 0], Zt[mid_in, 1], s=140, c="black", marker="x")
-
-        plt.title(f"t-SNE of (1 - cosine similarity to medoids) [n={n_plot}], k={k}")
-        plt.tight_layout()
-        plt.savefig(out_dir / f"tsne_{k}.png", dpi=220)
-        plt.close()
-
-        print(f"[info] Saved plots: embed_k{k}_pca.png, embed_k{k}_umap.png, embed_k{k}_tsne.png")
-    # ---------- end plots ----------
-
+            Zu = UMAP(n_components=2, n_neighbors=30, min_dist=0.10, metric="euclidean",
+                       random_state=int(args.seed)).fit_transform(E)
+            plt.figure(figsize=(12, 9))
+            plt.scatter(Zu[:, 0], Zu[:, 1], s=6, c=labels, cmap="tab20", alpha=0.55)
+            plt.scatter(Zu[medoids, 0], Zu[medoids, 1], s=120, c="black", marker="x")
+            plt.title(f"UMAP of (1 - cosine similarity to medoids), k={k}")
+            plt.tight_layout()
+            plt.savefig(out_dir / f"embed_k{k}_umap.png", dpi=220)
+            plt.close()
+            print(f"[info] Saved plots: embed_k{k}_pca.png, embed_k{k}_umap.png")
 
         selected_files = [os.path.basename(files[i]) for i in res.medoid_indices]
         payload = {
-            "method": "directed_wl_feature_hashing_kmedoids",
+            "method": "attributed_directed_wl_kmedoids" if args.use_edge_weights else "directed_wl_kmedoids",
             "k": int(k),
             "wl_iterations": int(args.wl_iterations),
             "hash_dim": int(args.hash_dim),
             "node_label_attr": args.node_label_attr,
+            "use_edge_weights": args.use_edge_weights,
+            "weight_attr": args.weight_attr if args.use_edge_weights else None,
+            "weight_bins": int(args.weight_bins) if args.use_edge_weights else None,
             "seed": int(args.seed),
             "mode": "FULL" if N <= int(args.max_full_n) else "CLARA",
             "selected_pickle_files": selected_files,
@@ -725,5 +772,5 @@ def main() -> None:
 if __name__ == "__main__":
     main()
 
-# how to run:
-# python src/kernels/kernel_baseline.py --graphs_dir data/sub20/graph
+# como ejecutar:
+# python src/kernels/kernel_baseline.py --graphs_dir graphs
